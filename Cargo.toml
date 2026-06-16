@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+
+members = [
+    "contracts/opticrum",
+    "calculator/opticrum",
+    "opticrum-protocol",
+    "tests",
+]
+
+[workspace.dependencies]
+ckb-cinnabar-calculator = { path = "../ckb-cinnabar/cinnabar/calculate" }
+ckb-cinnabar-verifier = { path = "../ckb-cinnabar/cinnabar/verify" }
+ckb-cinnabar = { path = "../ckb-cinnabar/cinnabar" }
+
+[package]
+edition = "2021"
+name = "opticrum-runner"
+version = "0.1.0"
+
+[dependencies]
+ckb-cinnabar = { workspace = true }
+opticrum-calculator = { path = "calculator/opticrum" }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 'z'
+overflow-checks = true
+panic = 'abort'
+strip = true

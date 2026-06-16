@@ -1,0 +1,9 @@
+[package]
+name = "opticrum-tests"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ckb-cinnabar-calculator = { workspace = true }
+opticrum-calculator = { path = "../calculator/opticrum" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
