@@ -9,9 +9,9 @@ members = [
 ]
 
 [workspace.dependencies]
-ckb-cinnabar-calculator = { path = "../ckb-cinnabar/cinnabar/calculate" }
-ckb-cinnabar-verifier = { path = "../ckb-cinnabar/cinnabar/verify" }
-ckb-cinnabar = { path = "../ckb-cinnabar/cinnabar" }
+ckb-cinnabar-calculator = { git = "https://github.com/ashuralyk/ckb-cinnabar.git", branch = "master" }
+ckb-cinnabar-verifier = { git = "https://github.com/ashuralyk/ckb-cinnabar.git", branch = "master" }
+ckb-cinnabar = { git = "https://github.com/ashuralyk/ckb-cinnabar.git", branch = "master" }
 
 [package]
 edition = "2021"
