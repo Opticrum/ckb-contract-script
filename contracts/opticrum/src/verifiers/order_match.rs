@@ -1,5 +1,5 @@
 use ckb_cinnabar_verifier::{re_exports::ckb_std, Result, Verification};
-use ckb_std::debug;
+use ckb_std::{ckb_constants::Source, debug, high_level::load_cell_capacity};
 
 use crate::{
     error::OpticrumError,
@@ -30,18 +30,26 @@ impl Verification<Context> for OrderMatch {
         debug!("Entering [{name}]");
 
         let Branch::Order(_, order_data) = &ctx.old_state.branch else {
-            return Err(OpticrumError::BadArgsLength.into());
+            return Err(OpticrumError::UnexpectedBranch.into());
         };
 
         let Branch::Match(match_args, match_data) = &ctx.new_state.as_ref().unwrap().branch else {
-            return Err(OpticrumError::BadArgsLength.into());
+            return Err(OpticrumError::UnexpectedBranch.into());
         };
 
         // 1. Verify a CellDep exists with at least the required channel capacity.
         let channel_obligated = find_channel_in_celldeps(
             &match_args.channel_outpoint,
-            order_data.channel_capacity,
-            order_data.xudt_amount,
+            if order_data.xudt_amount > 0 {
+                None
+            } else {
+                Some(order_data.channel_capacity)
+            },
+            if order_data.xudt_amount > 0 {
+                Some(order_data.xudt_amount)
+            } else {
+                None
+            },
             Some(
                 ctx.old_state
                     .xudt
@@ -68,18 +76,29 @@ impl Verification<Context> for OrderMatch {
             return Err(OpticrumError::MatchDataNotSet.into());
         }
 
-        // 4. Capacity check: rent must transfer fully from Order to Match
-        if ctx.old_state.unoccupied_capacity != ctx.new_state.as_ref().unwrap().unoccupied_capacity
-            || order_data.xudt_amount != match_data.xudt_amount
-        {
+        // 4. Total capacity (rent pool) must transfer intact from Order to Match.
+        //    Note: unoccupied differs by 8 CKB (Match data is 8 bytes larger),
+        //    so we compare the full cell capacity.
+        let old_cap = load_cell_capacity(0, Source::GroupInput)
+            .map_err(|_| OpticrumError::BadOrderMatch)?;
+        let new_cap = load_cell_capacity(0, Source::Output)
+            .map_err(|_| OpticrumError::BadOrderMatch)?;
+        if old_cap != new_cap {
             debug!(
-                "Capacity mismatch: order={} vs match={}, xudt_amount mismatch: {} vs {}",
-                ctx.old_state.unoccupied_capacity,
-                ctx.new_state.as_ref().unwrap().unoccupied_capacity,
+                "Capacity mismatch: order={} vs match={}",
+                old_cap, new_cap
+            );
+            return Err(OpticrumError::ChannelCapacityMismatch.into());
+        }
+
+        // 5. xUDT amount must transfer unchanged from Order to Match
+        if order_data.xudt_amount != match_data.xudt_amount {
+            debug!(
+                "xUDT amount mismatch: order={} vs match={}",
                 order_data.xudt_amount,
                 match_data.xudt_amount
             );
-            return Err(OpticrumError::BadOrderMatch.into());
+            return Err(OpticrumError::BadXudtAmount.into());
         }
 
         debug!("[{name}] Order matched successfully");

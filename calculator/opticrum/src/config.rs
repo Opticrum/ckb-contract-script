@@ -16,10 +16,7 @@ pub const CKB_DECIMAL: u64 = 100_000_000;
 /// The canonical type_id used in ScriptEx::Reference lookups.
 pub fn opticrum_contract_type_id(network: Network) -> H256 {
     match network {
-        Network::Mainnet => {
-            h256!("0x0000000000000000000000000000000000000000000000000000000000000000")
-        }
-        Network::Testnet => {
+        Network::Mainnet | Network::Testnet | Network::Fake => {
             h256!("0x0000000000000000000000000000000000000000000000000000000000000000")
         }
         _ => random_hash().into(),

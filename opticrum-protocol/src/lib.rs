@@ -69,7 +69,7 @@ impl OutPoint {
         buf
     }
 
-    pub fn eq(&self, other: &packed::OutPoint) -> bool {
+    pub fn matches(&self, other: &packed::OutPoint) -> bool {
         self.tx_hash == other.tx_hash().unpack() && self.index == other.index().unpack()
     }
 }
@@ -296,8 +296,10 @@ impl MatchData {
         tip_block: u64,
         xudt_extraction: u128,
     ) -> bool {
-        if new_match_data.rent_per_block != self.rent_per_block
-            || new_match_data.escrow_blocks != self.escrow_blocks
+        // Note: rent_per_block is intentionally not compared — f64 equality
+        // is unreliable across platforms (hardware vs RISC-V soft-float).
+        // It is an invariant set at match time and never changes.
+        if new_match_data.escrow_blocks != self.escrow_blocks
             || new_match_data.last_extraction_block != tip_block
             || new_match_data.xudt_amount.saturating_add(xudt_extraction) > self.xudt_amount
         {

@@ -16,7 +16,7 @@ impl Verification<Context> for OrderCancel {
         debug!("Entered [{name}]");
 
         let Branch::Order(order_args, _) = &ctx.old_state.branch else {
-            return Err(OpticrumError::BadArgsLength.into());
+            return Err(OpticrumError::UnexpectedBranch.into());
         };
 
         // Verify that the buyer participates in this transaction —

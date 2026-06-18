@@ -11,11 +11,12 @@ use crate::{error::OpticrumError, utils::has_lock_in_inputs, Branch, Context};
 /// party) can sweep remaining funds back.
 ///
 /// The destroy transaction provides:
-///   - HeaderDeps: [0] match creation block, [1] tip block
+///   - HeaderDeps: [0] tip block, [1] match creation block
 ///   - Input: Match Cell (Opticrum lock, Burn pattern)
 ///
 /// Checks:
-/// 1. Accumulated rent >= remaining capacity (exhausted)
+/// 1. Match is exhausted (accumulated rent >= remaining capacity)
+/// 2. Seller or Buyer must authorize (lock hash in inputs)
 #[derive(Default)]
 pub struct MatchDestroy;
 
@@ -24,20 +25,20 @@ impl Verification<Context> for MatchDestroy {
         debug!("Entering [{name}]");
 
         let Branch::Match(match_args, _) = &ctx.old_state.branch else {
-            return Err(OpticrumError::BadArgsLength.into());
+            return Err(OpticrumError::UnexpectedBranch.into());
         };
 
-        // 1. Check if match is exhausted
-        if ctx.old_state.is_exhausted() {
-            return Err(OpticrumError::MatchAlreadyExpired.into());
+        // 1. Match must be exhausted before destruction
+        if !ctx.old_state.is_exhausted() {
+            return Err(OpticrumError::MatchNotExhausted.into());
         }
 
         // 2. Seller or Buyer must participate
         let seller_present = has_lock_in_inputs(&match_args.seller_lock_hash)?;
         let buyer_present = has_lock_in_inputs(&match_args.order_args.buyer_lock_hash)?;
         if !seller_present && !buyer_present {
-            debug!("Seller or Buyer lock hash not found in inputs");
-            return Err(OpticrumError::SellerAuthMissing.into());
+            debug!("Neither seller nor buyer lock hash found in inputs");
+            return Err(OpticrumError::AuthorizationMissing.into());
         }
 
         debug!("[{name}] Match destroyed successfully");

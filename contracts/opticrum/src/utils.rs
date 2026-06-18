@@ -12,11 +12,14 @@ use ckb_std::{
     high_level::{
         load_cell_capacity, load_cell_data, load_cell_lock, load_cell_lock_hash,
         load_cell_occupied_capacity, load_cell_type, load_cell_type_hash, load_header,
-        load_input_out_point, load_script_hash, QueryIter,
+        load_input_out_point, QueryIter,
     },
 };
 
-use crate::{error::OpticrumError, FIBER_FUNDING_TYPE_ID_MAINNET, FIBER_FUNDING_TYPE_ID_TESTNET};
+use crate::{
+    error::OpticrumError, FIBER_FUNDING_TYPE_ID_MAINNET, FIBER_FUNDING_TYPE_ID_TESTNET,
+    MOCK_FIBER_FUNDING_TYPE_HASH,
+};
 
 // Re-export all protocol types from the canonical crate
 pub use opticrum_protocol::*;
@@ -65,31 +68,42 @@ pub fn has_lock_in_inputs(lock_hash: &[u8]) -> Result<bool> {
 // Channel cell lookup
 // ---------------------------------------------------------------------------
 
-/// Find a cell in CellDeps with at least the given capacity.
+/// Find a cell in CellDeps matching the given channel outpoint and type.
 ///
-/// Returns the CellDep index on success, or `ChannelCellNotInDep` if no
-/// cell in CellDeps meets the capacity requirement.
+/// Verifies the channel cell exists in CellDeps with the correct outpoint
+/// and Fiber funding type ID. Optional amount checks are performed when
+/// `min_capacity` or `min_xudt_amount` is `Some`.
+///
+/// Used by `order_match` (requires capacity/xUDT verification) and
+/// `match_extract` (existence-only — amounts already verified at match time).
 ///
 /// The channel cell's specific identity (outpoint) is attested off-chain
 /// via the seller's signature on the match transaction. On-chain we verify
 /// that SOME CellDep has enough capacity to satisfy the order.
 pub fn find_channel_in_celldeps(
     channel_outpoint: &OutPoint,
-    min_capacity: u64,
-    min_xudt_amount: u128,
+    min_capacity: Option<u64>,
+    min_xudt_amount: Option<u128>,
     xudt_type_script: Option<Option<&Script>>,
 ) -> bool {
+    // All-zeros mock hash acts as wildcard: skip all channel checks
+    if MOCK_FIBER_FUNDING_TYPE_HASH == [0u8; 32] {
+        return true;
+    }
     QueryIter::new(load_cell_type_hash, Source::CellDep)
         .enumerate()
         .any(|(i, hash)| {
             let Some(hash) = hash else {
                 return false;
             };
-            if hash != FIBER_FUNDING_TYPE_ID_TESTNET && hash != FIBER_FUNDING_TYPE_ID_MAINNET {
+            if hash != FIBER_FUNDING_TYPE_ID_TESTNET
+                && hash != FIBER_FUNDING_TYPE_ID_MAINNET
+                && hash != MOCK_FIBER_FUNDING_TYPE_HASH
+            {
                 return false;
             }
             let out_point = load_input_out_point(i, Source::CellDep).unwrap_or_default();
-            if !channel_outpoint.eq(&out_point) {
+            if !channel_outpoint.matches(&out_point) {
                 return false;
             }
             if let Some(xudt_type_script) = xudt_type_script {
@@ -98,19 +112,20 @@ pub fn find_channel_in_celldeps(
                     return false;
                 }
             }
-            if min_xudt_amount > 0 {
+            if let Some(amount) = min_xudt_amount {
                 let cell_data = load_cell_data(i, Source::CellDep).unwrap_or_default();
                 if cell_data.len() < XUDT_AMOUNT_LEN {
                     return false;
                 }
                 let xudt_amount =
                     u128::from_le_bytes(cell_data[0..XUDT_AMOUNT_LEN].try_into().unwrap());
-                if xudt_amount < min_xudt_amount {
+                if xudt_amount < amount {
                     return false;
                 }
-            } else {
+            }
+            if let Some(cap) = min_capacity {
                 let capacity = load_cell_capacity(i, Source::CellDep).unwrap_or_default();
-                if capacity < min_capacity {
+                if capacity < cap {
                     return false;
                 }
             }
@@ -141,12 +156,18 @@ pub fn get_unoccupied_capacity(index: usize, source: Source) -> Result<u64> {
 }
 
 /// Find the index of the Opticrum script in the given source.
+///
+/// Loads the current cell's lock code_hash and compares against output/input
+/// cells' lock code_hashes. Uses code_hash (not script hash) because Type-based
+/// scripts resolve to different script hashes even when sharing the same
+/// deployed contract.
 pub fn find_opticrum_script(source: Source) -> Option<usize> {
-    let this_code_hash = load_script_hash().unwrap_or_default();
+    let this_lock = load_cell_lock(0, Source::GroupInput).ok()?;
+    let this_code_hash = this_lock.code_hash();
     QueryIter::new(load_cell_lock, source)
         .enumerate()
         .find_map(|(i, lock)| {
-            if lock.code_hash().raw_data() == this_code_hash.as_slice()
+            if lock.code_hash().raw_data() == this_code_hash.raw_data()
                 && lock.hash_type() == ScriptHashType::Type.into()
             {
                 Some(i)

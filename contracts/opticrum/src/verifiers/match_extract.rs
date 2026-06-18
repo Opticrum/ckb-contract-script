@@ -1,5 +1,5 @@
 use ckb_cinnabar_verifier::{re_exports::ckb_std, Result, Verification};
-use ckb_std::debug;
+use ckb_std::{ckb_constants::Source, debug, high_level::{load_cell_capacity, load_cell_occupied_capacity}};
 
 use crate::{
     error::OpticrumError,
@@ -10,7 +10,7 @@ use crate::{
 /// Verifies that the seller correctly extracts rent from a Match Cell.
 ///
 /// The seller submits a transaction with:
-///   - HeaderDeps: [0] match creation block, [1] tip block
+///   - HeaderDeps: [0] tip block, [1] match creation block
 ///   - Input: Match Cell (Opticrum lock)
 ///   - Output: Updated Match Cell (reduced capacity, updated last_extraction_block)
 ///
@@ -29,14 +29,15 @@ impl Verification<Context> for MatchExtract {
         debug!("Entering [{name}]");
 
         let Branch::Match(match_args, _) = &ctx.old_state.branch else {
-            return Err(OpticrumError::BadArgsLength.into());
+            return Err(OpticrumError::UnexpectedBranch.into());
         };
 
-        // 1. Verify a CellDep exists with at least the required channel capacity.
+        // 1. Verify channel cell still exists in CellDeps (existence only —
+        //    capacity/xUDT amount was already verified at match time).
         if !find_channel_in_celldeps(
             &match_args.channel_outpoint,
-            u64::MAX,
-            u128::MAX,
+            None,
+            None,
             ctx.old_state
                 .xudt
                 .as_ref()
@@ -52,17 +53,47 @@ impl Verification<Context> for MatchExtract {
             return Err(OpticrumError::SellerAuthMissing.into());
         }
 
-        // 3. Calculate linear rent and check if match is exhausted
+        // 3. If match is already exhausted, reject extraction — use destroy instead
         if ctx.old_state.is_exhausted() {
-            return Err(OpticrumError::MatchAlreadyExpired.into());
+            return Err(OpticrumError::MatchAlreadyExhausted.into());
         }
 
-        // 4. Handle exhausted vs normal extraction
-        if ctx
-            .old_state
-            .good_extraction(ctx.new_state.as_ref().unwrap())
-        {
-            return Err(OpticrumError::MatchAlreadyExpired.into());
+        // 4. Validate extraction amount matches linear rent
+        let expected_rent = ctx.old_state.liquidity_rent();
+        let new_state = ctx.new_state.as_ref().unwrap();
+        if ctx.old_state.xudt.is_some() {
+            let Branch::Match(_, new_match_data) = &new_state.branch else {
+                return Err(OpticrumError::UnexpectedBranch.into());
+            };
+            let (old_xudt, _) = ctx.old_state.xudt.as_ref().unwrap();
+            let extracted = old_xudt.saturating_sub(new_match_data.xudt_amount);
+            if extracted != expected_rent as u128 {
+                return Err(OpticrumError::BadExtractionAmount.into());
+            }
+        } else {
+            let extracted = ctx
+                .old_state
+                .unoccupied_capacity
+                .saturating_sub(new_state.unoccupied_capacity);
+            if extracted != expected_rent {
+                return Err(OpticrumError::BadExtractionAmount.into());
+            }
+        }
+
+        // 5. Validate MatchData fields are correctly updated
+        if !ctx.old_state.good_extraction(new_state) {
+            return Err(OpticrumError::BadMatchDataUpdate.into());
+        }
+
+        // 6. Guard: output cell must remain viable (capacity >= occupied).
+        //    Full extraction should use destroy_match instead.
+        let out_cap = load_cell_capacity(0, Source::Output)
+            .map_err(|_| OpticrumError::BadExtractionAmount)?;
+        let out_occ = load_cell_occupied_capacity(0, Source::Output)
+            .map_err(|_| OpticrumError::BadExtractionAmount)?;
+        if out_cap < out_occ {
+            debug!("Extraction would leave cell underfunded");
+            return Err(OpticrumError::BadExtractionAmount.into());
         }
 
         debug!("[{name}] Rent extracted successfully");

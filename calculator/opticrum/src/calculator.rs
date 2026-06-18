@@ -251,7 +251,7 @@ pub fn match_order<T: RPC>(
             lock_script: Some(opticrum_lock(match_args.to_bytes().to_vec())),
             type_script: None,
             data: Some(match_data.to_bytes().to_vec()),
-            adjust_capacity: CapacityAdjustment::BuildExact,
+            adjust_capacity: CapacityAdjustment::Keep,
         }),
     ])
 }

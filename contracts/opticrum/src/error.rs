@@ -15,10 +15,14 @@ define_errors!(OpticrumError, {
     HeaderNotSet,
     BadMatchDataUpdate,
     MatchAlreadyExpired,
+    MatchAlreadyExhausted,
+    MatchNotExhausted,
 
     // General errors
     BadArgsLength,
     BuyerAuthMissing,
     SellerAuthMissing,
+    AuthorizationMissing,
+    UnexpectedBranch,
     UnknownState,
 });

@@ -100,7 +100,7 @@ fn parse_order_cell(cell: &LiveCell) -> eyre::Result<OrderInfo> {
         order_data,
         xudt,
         ckb_capacity,
-        order_outpoint: OutPoint::from_slice(&cell.out_point.as_slice())
+        order_outpoint: OutPoint::from_slice(cell.out_point.as_slice())
             .map_err(|e| eyre!("{e}"))?,
     })
 }
@@ -127,7 +127,7 @@ fn parse_match_cell(cell: &LiveCell) -> eyre::Result<MatchInfo> {
         match_data,
         xudt,
         ckb_capacity,
-        match_outpoint: OutPoint::from_slice(&cell.out_point.as_slice())
+        match_outpoint: OutPoint::from_slice(cell.out_point.as_slice())
             .map_err(|e| eyre!("{e}"))?,
         match_current_block: cell.block_number,
     })

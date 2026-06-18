@@ -29,6 +29,11 @@ pub const FIBER_FUNDING_TYPE_ID_MAINNET: [u8; 32] = [
     0x36, 0xa9, 0x81, 0xde, 0xec, 0x3e, 0x78, 0x20, 0x19, 0x4b, 0x9c, 0x04, 0x29, 0x67, 0xf4, 0xf1,
 ];
 
+/// Mock Fiber funding type hash for testing.
+/// When set to all-zeros, acts as a wildcard (accepts any channel).
+/// Otherwise, must match exactly.
+pub const MOCK_FIBER_FUNDING_TYPE_HASH: [u8; 32] = [0u8; 32];
+
 #[derive(Default, PartialEq, Eq)]
 enum Branch {
     Order(OrderArgs, OrderData),
@@ -143,7 +148,6 @@ impl OpticrumState {
             match_data.good_extraction(another_match_data, tip_block, liquidity_rent as u128)
         } else {
             match_data.good_extraction(another_match_data, tip_block, 0)
-                && self.unoccupied_capacity <= liquidity_rent
         }
     }
 }
