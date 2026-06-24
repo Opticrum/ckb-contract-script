@@ -12,7 +12,7 @@ Built with the [ckb-cinnabar](https://github.com/ashuralyk/ckb-cinnabar) framewo
 ## Architecture
 
 ```
-Order Cell (buyer creates, 64-byte lock args + 32-byte data)
+Order Cell (buyer creates, 65-byte lock args + 32-byte data)
     ├── Cancel  → buyer reclaims (Burn pattern)
     └── Match   → seller matches with pre-created channel, produces Match Cell
                   (Transfer pattern)
@@ -26,8 +26,8 @@ Two Cell states discriminated by lock script `args` length:
 
 | State | Args Length | Contents |
 |-------|------------|----------|
-| **Order** | 64 bytes | `fiber_pubkey` (32) + `buyer_lock_hash` (32) |
-| **Match** | 132 bytes | Order args (64) + `channel_outpoint` (36) + `seller_lock_hash` (32) |
+| **Order** | 65 bytes | `fiber_pubkey` (33) + `buyer_lock_hash` (32) |
+| **Match** | 133 bytes | Order args (65) + `channel_outpoint` (36) + `seller_lock_hash` (32) |
 
 ### Cell Data Layout
 
@@ -119,10 +119,10 @@ ScriptPattern to route to the correct branch:
 
 ```
 Root (always runs first)
-├── args_len == 64 (Order)
+├── args_len == 65 (Order)
 │   ├── Burn     → "order_cancel"
 │   └── Transfer → "order_match"
-└── args_len == 132 (Match)
+└── args_len == 133 (Match)
     ├── Transfer → "match_extract"
     └── Burn     → "match_destroy"
 ```
@@ -163,7 +163,7 @@ Inputs:    [Order Cell (Burn), Buyer's cell]
 Seller matches an Order by referencing a pre-created Fiber channel. The channel
 cell is added as a CellDep (not consumed). The verifier checks:
 1. Channel Cell exists in CellDeps with matching OutPoint and Fiber funding type ID, sufficient capacity
-2. Match args' first 64 bytes match Order args
+2. Match args' first 65 bytes match Order args
 3. Match data initialized (rent_per_block > 0, escrow_blocks > 0, last_extraction_block == 0)
 4. Match capacity equals Order capacity (rent transferred intact)
 5. xUDT amount unchanged from Order to Match
@@ -224,9 +224,9 @@ full remaining capacity (+ xUDT) is released and no updated Match Cell is produc
 
 | Type | Fields | Size |
 |------|--------|------|
-| `OrderArgs` | `fiber_pubkey` (32), `buyer_lock_hash` (32) | 64 bytes |
+| `OrderArgs` | `fiber_pubkey` (33), `buyer_lock_hash` (32) | 65 bytes |
 | `OrderData` | `xudt_amount` (u128), `channel_capacity` (u64), `escrow_blocks` (u64) | 32 bytes |
-| `MatchArgs` | `order_args` (64), `channel_outpoint` (36), `seller_lock_hash` (32) | 132 bytes |
+| `MatchArgs` | `order_args` (65), `channel_outpoint` (36), `seller_lock_hash` (32) | 133 bytes |
 | `MatchData` | `xudt_amount` (u128), `rent_per_block` (f64), `escrow_blocks` (u64), `last_extraction_block` (u64) | 40 bytes |
 | `OutPoint` | `tx_hash` (32), `index` (u32) | 36 bytes |
 | `Xudt` | `amount` (u128), `type_script` (Script) | — |
@@ -276,7 +276,7 @@ make prepare        # rustup target add riscv64imac-unknown-none-elf
 | `BadMatchDataUpdate` | Match data fields incorrectly updated |
 | `MatchAlreadyExhausted` | Attempt to extract from already-exhausted match |
 | `MatchNotExhausted` | Attempt to destroy before match is exhausted |
-| `BadArgsLength` | Lock args wrong length (not 64 or 132) |
+| `BadArgsLength` | Lock args wrong length (not 65 or 133) |
 | `BuyerAuthMissing` | Buyer not found in transaction inputs |
 | `SellerAuthMissing` | Seller not found in transaction inputs |
 | `AuthorizationMissing` | Neither seller nor buyer found in inputs (destroy) |

@@ -15,12 +15,34 @@ ckb-cinnabar = { git = "https://github.com/ashuralyk/ckb-cinnabar.git", branch =
 
 [package]
 edition = "2021"
-name = "opticrum-runner"
+name = "runner"
 version = "0.1.0"
+default-run = "runner"
+
+[[bin]]
+name = "runner"
+path = "src/main.rs"
+
+[[bin]]
+name = "create_order"
+path = "src/bin/create_order.rs"
+
+[[bin]]
+name = "scan_orders"
+path = "src/bin/scan_orders.rs"
+
+[[bin]]
+name = "match_order"
+path = "src/bin/match_order.rs"
+
+[[bin]]
+name = "extract_rent"
+path = "src/bin/extract_rent.rs"
 
 [dependencies]
 ckb-cinnabar = { workspace = true }
 opticrum-calculator = { path = "calculator/opticrum" }
+hex = "0.4.3"
 
 [profile.release]
 codegen-units = 1

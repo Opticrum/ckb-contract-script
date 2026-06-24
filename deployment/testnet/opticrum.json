@@ -1,0 +1,32 @@
+[
+  {
+    "name": "opticrum",
+    "date": "2026-06-23T14:43:25.975726+00:00",
+    "operation": "deploy",
+    "version": "v0.1.1",
+    "tx_hash": "0x92ca2f690b62419bf5bab1e4e82b6912e3727def162da34e52d6cd6e5e50509d",
+    "out_index": 0,
+    "data_hash": "0xb4adfcff0f99142de6803f4d6988651dd92a42351350bb26a87e2f77cbcc5701",
+    "occupied_capacity": 7114200000000,
+    "payer_address": "ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqv5puz2ee96nuh9nmc6rtm0n8v7agju4rgdmxlnk",
+    "contract_owner_address": "ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqv5puz2ee96nuh9nmc6rtm0n8v7agju4rgdmxlnk",
+    "type_id": "0x1f8452818672fbb60f39c72e2d30dadd1814f322dfc21bf552784d83054f0247",
+    "type_id_args": "0x3b009c195d6dd5617d687a0387bccefae99eac8a1a5e393bf2563a3afb7feb49",
+    "__comment": null
+  },
+  {
+    "name": "opticrum",
+    "date": "2026-06-24T03:30:34.145344+00:00",
+    "operation": "migrate",
+    "version": "v0.1.2",
+    "tx_hash": "0x998b9040a7d1f9dd4ee862dee490a524735af4f64fca613008a0c9cd10770a57",
+    "out_index": 0,
+    "data_hash": "0xa369e70a9f2287fa12ba64c213102ef9e074ba46598e22770d33ca555339e8c3",
+    "occupied_capacity": 7128600000000,
+    "payer_address": "ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqv5puz2ee96nuh9nmc6rtm0n8v7agju4rgdmxlnk",
+    "contract_owner_address": "ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqv5puz2ee96nuh9nmc6rtm0n8v7agju4rgdmxlnk",
+    "type_id": "0x1f8452818672fbb60f39c72e2d30dadd1814f322dfc21bf552784d83054f0247",
+    "type_id_args": "0x3b009c195d6dd5617d687a0387bccefae99eac8a1a5e393bf2563a3afb7feb49",
+    "__comment": null
+  }
+]

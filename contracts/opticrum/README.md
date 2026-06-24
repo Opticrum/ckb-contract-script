@@ -12,12 +12,12 @@ The contract verifies structural correctness, authorization, and rent math. All 
 
 Two Cell states, discriminated by lock script `args` length:
 
-### Order Cell (64-byte args)
+### Order Cell (65-byte args)
 
 | Field | Offset | Size | Type |
 |-------|--------|------|------|
-| Fiber Pubkey | 0 | 32 | bytes |
-| Buyer Lock Hash | 32 | 32 | bytes |
+| Fiber Pubkey | 0 | 33 | bytes |
+| Buyer Lock Hash | 33 | 32 | bytes |
 
 ### Order Cell Data (32 bytes)
 
@@ -29,13 +29,13 @@ Stored as the cell's `data` field.
 | Channel Capacity | 16 | 8 | u64 LE |
 | Escrow Blocks | 24 | 8 | u64 LE |
 
-### Match Cell (132-byte args)
+### Match Cell (133-byte args)
 
 | Field | Offset | Size | Type |
 |-------|--------|------|------|
-| *(Order fields)* | 0 | 64 | *(same as Order args)* |
-| Channel OutPoint | 64 | 36 | tx_hash[32] + index[4] (u32 LE) |
-| Seller Lock Hash | 100 | 32 | bytes |
+| *(Order fields)* | 0 | 65 | *(same as Order args)* |
+| Channel OutPoint | 65 | 36 | tx_hash[32] + index[4] (u32 LE) |
+| Seller Lock Hash | 101 | 32 | bytes |
 
 ### Match Cell Data (40 bytes)
 
@@ -54,10 +54,10 @@ The `Root` verifier inspects `args` length and `ScriptPattern` to route to the c
 
 ```
 Root
-├── args_len == 64 (Order)
+├── args_len == 65 (Order)
 │   ├── Burn     → OrderCancel
 │   └── Transfer → OrderMatch
-└── args_len == 132 (Match)
+└── args_len == 133 (Match)
     ├── Transfer → MatchExtract
     └── Burn     → MatchDestroy
 ```
@@ -85,7 +85,7 @@ Seller matches an Order by referencing a pre-created Fiber channel.
 
 **Checks:**
 1. Channel Cell exists in CellDeps with matching OutPoint and Fiber funding type ID, and sufficient capacity and/or xUDT amount (depending on Order type)
-2. Match Cell args correctly extend Order args (first 64 bytes must match)
+2. Match Cell args correctly extend Order args (first 65 bytes must match)
 3. Match Cell data initialized: `rent_per_block > 0`, `escrow_blocks > 0`, `last_extraction_block == 0`
 4. Match Cell capacity equals Order Cell capacity (rent transferred intact)
 5. xUDT amount unchanged from Order to Match
@@ -136,7 +136,7 @@ This is the safety valve against abandoned matches — once enough rent has vest
 | `BadMatchDataUpdate` | Match data fields incorrectly updated during extraction |
 | `MatchAlreadyExhausted` | Attempt to extract from already-exhausted match |
 | `MatchNotExhausted` | Attempt to destroy before match is exhausted |
-| `BadArgsLength` | Lock args wrong length (not 64 or 132) |
+| `BadArgsLength` | Lock args wrong length (not 65 or 133) |
 | `BuyerAuthMissing` | Buyer not found in transaction inputs |
 | `SellerAuthMissing` | Seller not found in transaction inputs |
 | `AuthorizationMissing` | Neither seller nor buyer found in inputs (destroy) |

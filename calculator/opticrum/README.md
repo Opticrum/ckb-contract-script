@@ -105,11 +105,11 @@ Outputs:     [Claimant cell + remaining funds]
 
 ### `scan_orders(rpc) → Vec<OrderInfo>`
 
-Scans all live Order cells on-chain using the CKB indexer. Queries cells with the Opticrum lock whose args length is exactly `ORDER_ARGS_LEN` (64 bytes). Parses each into `OrderInfo`, computing real rent capacity as `total_capacity - occupied_capacity`.
+Scans all live Order cells on-chain using the CKB indexer. Queries cells with the Opticrum lock whose args length is exactly `ORDER_ARGS_LEN` (65 bytes). Parses each into `OrderInfo`, computing real rent capacity as `total_capacity - occupied_capacity`.
 
 ### `scan_matches(rpc) → Vec<MatchInfo>`
 
-Scans all live Match cells on-chain. Queries cells with the Opticrum lock whose args length is exactly `MATCH_ARGS_LEN` (132 bytes). Parses each into `MatchInfo`, including the block number at which the match was created (`match_current_block`).
+Scans all live Match cells on-chain. Queries cells with the Opticrum lock whose args length is exactly `MATCH_ARGS_LEN` (133 bytes). Parses each into `MatchInfo`, including the block number at which the match was created (`match_current_block`).
 
 Both use prefix search mode for efficient indexer queries. Results are paginated in batches of 50.
 

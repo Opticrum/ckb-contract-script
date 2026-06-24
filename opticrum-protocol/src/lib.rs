@@ -15,12 +15,12 @@
 
 use ckb_cinnabar_verifier::re_exports::ckb_std::ckb_types::{packed, prelude::Unpack};
 
-pub const FIBER_PUBKEY_LEN: usize = 32;
+pub const FIBER_PUBKEY_LEN: usize = 33; // 1-byte prefix + 32-byte x-coordinate
 pub const LOCK_HASH_LEN: usize = 32;
 
-pub const ORDER_ARGS_LEN: usize = FIBER_PUBKEY_LEN + LOCK_HASH_LEN; // 64
+pub const ORDER_ARGS_LEN: usize = FIBER_PUBKEY_LEN + LOCK_HASH_LEN; // 65
 pub const CHANNEL_OUTPOINT_LEN: usize = 32 + 4; // 36: tx_hash[32] + index[4] (u32 LE)
-pub const MATCH_ARGS_LEN: usize = ORDER_ARGS_LEN + CHANNEL_OUTPOINT_LEN + LOCK_HASH_LEN; // 132
+pub const MATCH_ARGS_LEN: usize = ORDER_ARGS_LEN + CHANNEL_OUTPOINT_LEN + LOCK_HASH_LEN; // 133
 
 pub const XUDT_AMOUNT_LEN: usize = 16;
 pub const CHANNEL_CAPACITY_LEN: usize = 8;
@@ -75,18 +75,85 @@ impl OutPoint {
 }
 
 // ---------------------------------------------------------------------------
-// OrderArgs — 64-byte Order Cell lock args
+// CompressedPubkey — 33-byte compressed secp256k1 public key
 // ---------------------------------------------------------------------------
-// Layout: fiber_pubkey[32] | buyer_lock_hash[32]
+// Layout: prefix[1] | x_coordinate[32]
+//
+// The prefix byte encodes y-coordinate parity:
+//   - 0x02 — Y is even
+//   - 0x03 — Y is odd
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct CompressedPubkey([u8; FIBER_PUBKEY_LEN]);
+
+impl CompressedPubkey {
+    /// Wrap a raw 33-byte array as a CompressedPubkey.
+    pub fn new(bytes: [u8; FIBER_PUBKEY_LEN]) -> Self {
+        Self(bytes)
+    }
+
+    /// Parse from a byte slice. Returns an error if the slice length != 33.
+    pub fn from_slice(data: &[u8]) -> Result<Self, &'static str> {
+        if data.len() != FIBER_PUBKEY_LEN {
+            return Err("Bad compressed pubkey length");
+        }
+        let mut bytes = [0u8; FIBER_PUBKEY_LEN];
+        bytes.copy_from_slice(data);
+        Ok(Self(bytes))
+    }
+
+    /// Return the raw 33-byte array.
+    pub fn to_bytes(&self) -> [u8; FIBER_PUBKEY_LEN] {
+        self.0
+    }
+
+    /// Borrow as a reference to the raw 33-byte array.
+    pub fn as_bytes(&self) -> &[u8; FIBER_PUBKEY_LEN] {
+        &self.0
+    }
+
+    /// Compression prefix byte: `0x02` (even Y) or `0x03` (odd Y).
+    pub fn prefix(&self) -> u8 {
+        self.0[0]
+    }
+
+    /// Returns `true` if the prefix byte matches a valid compressed pubkey prefix.
+    pub fn is_compressed(&self) -> bool {
+        matches!(self.0[0], 0x02 | 0x03)
+    }
+}
+
+impl core::fmt::Debug for CompressedPubkey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "CompressedPubkey(0x")?;
+        for byte in &self.0 {
+            write!(f, "{:02x}", byte)?;
+        }
+        write!(f, ")")
+    }
+}
+
+impl core::ops::Deref for CompressedPubkey {
+    type Target = [u8; FIBER_PUBKEY_LEN];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OrderArgs — 65-byte Order Cell lock args
+// ---------------------------------------------------------------------------
+// Layout: fiber_pubkey[33] | buyer_lock_hash[32]
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OrderArgs {
-    pub fiber_pubkey: [u8; FIBER_PUBKEY_LEN],
+    pub fiber_pubkey: CompressedPubkey,
     pub buyer_lock_hash: [u8; LOCK_HASH_LEN],
 }
 
 impl OrderArgs {
-    pub fn new(fiber_pubkey: [u8; FIBER_PUBKEY_LEN], buyer_lock_hash: [u8; LOCK_HASH_LEN]) -> Self {
+    pub fn new(fiber_pubkey: CompressedPubkey, buyer_lock_hash: [u8; LOCK_HASH_LEN]) -> Self {
         Self {
             fiber_pubkey,
             buyer_lock_hash,
@@ -97,8 +164,7 @@ impl OrderArgs {
         if args.len() != ORDER_ARGS_LEN {
             return Err("Bad Order args length");
         }
-        let mut fiber_pubkey = [0u8; FIBER_PUBKEY_LEN];
-        fiber_pubkey.copy_from_slice(&args[0..FIBER_PUBKEY_LEN]);
+        let fiber_pubkey = CompressedPubkey::from_slice(&args[0..FIBER_PUBKEY_LEN])?;
         let mut buyer_lock_hash = [0u8; LOCK_HASH_LEN];
         buyer_lock_hash.copy_from_slice(&args[FIBER_PUBKEY_LEN..ORDER_ARGS_LEN]);
         Ok(Self {
@@ -109,7 +175,7 @@ impl OrderArgs {
 
     pub fn to_bytes(&self) -> [u8; ORDER_ARGS_LEN] {
         let mut buf = [0u8; ORDER_ARGS_LEN];
-        buf[0..FIBER_PUBKEY_LEN].copy_from_slice(&self.fiber_pubkey);
+        buf[0..FIBER_PUBKEY_LEN].copy_from_slice(&self.fiber_pubkey.to_bytes());
         buf[FIBER_PUBKEY_LEN..ORDER_ARGS_LEN].copy_from_slice(&self.buyer_lock_hash);
         buf
     }
@@ -169,9 +235,9 @@ impl OrderData {
 }
 
 // ---------------------------------------------------------------------------
-// MatchArgs — 132-byte Match Cell lock args
+// MatchArgs — 133-byte Match Cell lock args
 // ---------------------------------------------------------------------------
-// Layout: OrderArgs[64] | channel_outpoint[36] | seller_lock_hash[32]
+// Layout: OrderArgs[65] | channel_outpoint[36] | seller_lock_hash[32]
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MatchArgs {

@@ -26,8 +26,8 @@ use opticrum_calculator::{
     cancel_order, create_order, destroy_match, extract_rent, match_order, scan_matches,
     scan_orders,
     types::{
-        AnnualYield, MatchArgs, MatchData, MatchInfo, OrderArgs, OrderData, OrderInfo, OutPoint,
-        MATCH_ARGS_LEN, MATCH_DATA_LEN, ORDER_ARGS_LEN, ORDER_DATA_LEN,
+        AnnualYield, CompressedPubkey, MatchArgs, MatchData, MatchInfo, OrderArgs, OrderData,
+        OrderInfo, OutPoint, MATCH_ARGS_LEN, MATCH_DATA_LEN, ORDER_ARGS_LEN, ORDER_DATA_LEN,
     },
 };
 
@@ -60,8 +60,8 @@ mod faker {
         hash.copy_from_slice(&script_hash);
         hash
     }
-    pub fn fiber_pubkey() -> [u8; 32] {
-        [0x03u8; 32]
+    pub fn fiber_pubkey() -> CompressedPubkey {
+        CompressedPubkey::new([0x03u8; 33])
     }
     pub fn channel_outpoint() -> OutPoint {
         OutPoint::new([0x04u8; 32], 0)
@@ -398,7 +398,7 @@ async fn test_destroy_match() -> eyre::Result<()> {
 
 #[test]
 fn test_args_encoding() {
-    let order = OrderArgs::new([0x03u8; 32], [0x01u8; 32]);
+    let order = OrderArgs::new(CompressedPubkey::new([0x03u8; 33]), [0x01u8; 32]);
     let args = order.to_bytes();
     assert_eq!(args.len(), ORDER_ARGS_LEN);
 
@@ -434,7 +434,7 @@ fn test_linear_rent_calculation() {
 
 #[test]
 fn test_complete_lifecycle_types() {
-    let order_args = OrderArgs::new([0x03u8; 32], [0x01u8; 32]);
+    let order_args = OrderArgs::new(CompressedPubkey::new([0x03u8; 33]), [0x01u8; 32]);
     let order_bytes = order_args.to_bytes();
     assert_eq!(order_bytes.len(), ORDER_ARGS_LEN);
 

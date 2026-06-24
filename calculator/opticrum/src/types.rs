@@ -20,7 +20,7 @@ use crate::config::ABOUT_ONE_DAY_BLOCKS;
 ///
 /// The `amount` is stored in the cell data (first 16 bytes, u128 LE).
 /// The `type_script` is set as the cell's type script
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Xudt {
     pub amount: u128,
     pub type_script: Script,
@@ -53,6 +53,7 @@ impl AnnualYield {
 
 /// Parsed representation of a live Order cell, including indexer-provided
 /// context (outpoint, capacity).
+#[derive(Clone, Debug)]
 pub struct OrderInfo {
     pub order_args: OrderArgs,
     pub order_data: OrderData,
@@ -67,6 +68,7 @@ pub struct OrderInfo {
 
 /// Parsed representation of a live Match cell, including indexer-provided
 /// context (outpoint, capacity, block number).
+#[derive(Clone, Debug)]
 pub struct MatchInfo {
     pub match_args: MatchArgs,
     pub match_data: MatchData,

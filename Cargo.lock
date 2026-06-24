@@ -2052,14 +2052,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "opticrum-runner"
-version = "0.1.0"
-dependencies = [
- "ckb-cinnabar",
- "opticrum-calculator",
-]
-
-[[package]]
 name = "opticrum-tests"
 version = "0.1.0"
 dependencies = [
@@ -2544,6 +2536,15 @@ checksum = "50a0e551c1e27e1731aba276dbeaeac73f53c7cd34d1bda485d02bd1e0f36844"
 dependencies = [
  "libc",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "runner"
+version = "0.1.0"
+dependencies = [
+ "ckb-cinnabar",
+ "hex",
+ "opticrum-calculator",
 ]
 
 [[package]]
