@@ -8,10 +8,19 @@ use ckb_cinnabar_calculator::{
     rpc::Network,
     simulation::random_hash,
 };
+use opticrum_protocol::{MATCH_ARGS_LEN, MATCH_DATA_LEN, ORDER_ARGS_LEN, ORDER_DATA_LEN};
 
 pub const OPTICRUM_CONTRACT_NAME: &str = "opticrum";
 pub const ABOUT_ONE_DAY_BLOCKS: u64 = 10_000;
 pub const CKB_DECIMAL: u64 = 100_000_000;
+
+/// Extra capacity (shannons) pre-funded on Order cells above rent so Order→Match
+/// with `CapacityAdjustment::Keep` succeeds without the seller injecting CKB.
+///
+/// Match cells have larger lock args and data; occupied grows by this many bytes.
+/// CKB occupied rate: 1 byte → CKB_DECIMAL shannons.
+pub const ORDER_TO_MATCH_CAPACITY_RESERVE: u64 =
+    (MATCH_ARGS_LEN - ORDER_ARGS_LEN + MATCH_DATA_LEN - ORDER_DATA_LEN) as u64 * CKB_DECIMAL;
 
 /// The canonical type_id used in ScriptEx::Reference lookups.
 pub fn opticrum_contract_type_id(network: Network) -> H256 {

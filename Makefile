@@ -20,7 +20,7 @@ CONTRACT :=
 # By default, we would clean build/{release,debug} folder first, in case old
 # contracts are mixed together with new ones, if for some reason you want to
 # revert this behavior, you can change this to anything other than true
-CLEAN_BUILD_DIR_FIRST := true
+CLEAN_BUILD_DIR_FIRST := false
 BUILD_DIR := build/$(MODE)
 
 ifeq (release,$(MODE))

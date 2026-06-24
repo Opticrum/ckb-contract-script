@@ -20,6 +20,7 @@ use ckb_cinnabar_calculator::{
 };
 
 use crate::{
+    config::ORDER_TO_MATCH_CAPACITY_RESERVE,
     operation::{opticrum_lock, AddOpticrumContractCelldep},
     types::{AnnualYield, MatchArgs, MatchData, MatchInfo, OrderArgs, OrderData, OrderInfo},
 };
@@ -45,7 +46,8 @@ use crate::{
 ///       lock:   Opticrum (ORDER_ARGS_LEN-byte args)
 ///       type:   none / xUDT type script
 ///       data:   OrderData (ORDER_DATA_LEN bytes: xudt_amount + channel_capacity + escrow_blocks)
-///       capacity: rent_capacity for CKB, 0 for xUDT (capacity comes from xUDT cell)
+///       capacity: rent_capacity (+ ORDER_TO_MATCH_CAPACITY_RESERVE for CKB) so
+///                 Order→Match can use Keep without seller CKB; xUDT adds only the reserve
 /// ```
 ///
 /// The Order Cell is created with the Opticrum lock script. The lock does NOT
@@ -87,7 +89,7 @@ pub fn create_order<T: RPC>(
             lock_script: opticrum_lock(args),
             type_script: xudt_type_script.map(|x| x.into()),
             data: stored_order_data.to_bytes().to_vec(),
-            capacity: 0,
+            capacity: ORDER_TO_MATCH_CAPACITY_RESERVE,
             absolute_capacity: false,
             type_id: false,
         }));
@@ -96,7 +98,7 @@ pub fn create_order<T: RPC>(
             lock_script: opticrum_lock(args),
             type_script: None,
             data: stored_order_data.to_bytes().to_vec(),
-            capacity: rent_capacity,
+            capacity: rent_capacity + ORDER_TO_MATCH_CAPACITY_RESERVE,
             absolute_capacity: false,
             type_id: false,
         }));

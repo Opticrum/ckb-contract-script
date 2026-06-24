@@ -9,6 +9,7 @@ use ckb_cinnabar_verifier::{re_exports::ckb_std, Result};
 use ckb_std::{
     ckb_constants::Source,
     ckb_types::{core::ScriptHashType, packed::Script, prelude::Unpack},
+    debug,
     high_level::{
         load_cell_capacity, load_cell_data, load_cell_lock, load_cell_lock_hash,
         load_cell_occupied_capacity, load_cell_type, load_cell_type_hash, load_header,
@@ -70,7 +71,7 @@ pub fn has_lock_in_inputs(lock_hash: &[u8]) -> Result<bool> {
 // ---------------------------------------------------------------------------
 
 /// Returns true if the type hash is a recognized Fiber funding type.
-fn is_fiber_funding_type_hash(hash: &[u8; 32]) -> bool {
+fn is_fiber_funding_contract(hash: &[u8; 32]) -> bool {
     *hash == FIBER_FUNDING_TYPE_ID_TESTNET
         || *hash == FIBER_FUNDING_TYPE_ID_MAINNET
         || *hash == FIBER_FUNDING_TYPE_ID_MOCK
@@ -91,7 +92,7 @@ pub fn find_channel_celldep_index(channel_outpoint: &OutPoint) -> Option<usize> 
         }
         if FIBER_FUNDING_TYPE_ID_MOCK != [0u8; 32] {
             let hash = load_cell_type_hash(i, Source::CellDep).ok()??;
-            if !is_fiber_funding_type_hash(&hash) {
+            if !is_fiber_funding_contract(&hash) {
                 continue;
             }
         }
@@ -144,17 +145,19 @@ pub fn find_channel_in_celldeps(
     let Ok(tx) = load_transaction() else {
         return false;
     };
-    for (i, dep) in tx.raw().cell_deps().into_iter().enumerate() {
-        if !channel_outpoint.matches(&dep.out_point()) {
+    if !tx
+        .raw()
+        .cell_deps()
+        .into_iter()
+        .any(|dep| channel_outpoint.matches(&dep.out_point()))
+    {
+        return false;
+    }
+    for (i, lock) in QueryIter::new(load_cell_lock, Source::CellDep).enumerate() {
+        if !is_fiber_funding_contract(&lock.code_hash().unpack())
+            || lock.hash_type() != ScriptHashType::Type.into()
+        {
             continue;
-        }
-        if FIBER_FUNDING_TYPE_ID_MOCK != [0u8; 32] {
-            let Some(hash) = load_cell_type_hash(i, Source::CellDep).ok().flatten() else {
-                continue;
-            };
-            if !is_fiber_funding_type_hash(&hash) {
-                continue;
-            }
         }
         if let Some(xudt_type_script) = xudt_type_script {
             let type_script = load_cell_type(i, Source::CellDep).unwrap();
@@ -175,6 +178,7 @@ pub fn find_channel_in_celldeps(
         }
         if let Some(cap) = min_capacity {
             let capacity = load_cell_capacity(i, Source::CellDep).unwrap_or(0);
+            debug!("min: {cap}, real: {capacity}");
             if capacity < cap {
                 continue;
             }

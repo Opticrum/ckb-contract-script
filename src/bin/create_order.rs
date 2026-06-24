@@ -27,7 +27,7 @@ pub async fn main() -> eyre::Result<()> {
 
     // OrderArgs: fiber_pubkey (33 bytes) + buyer_lock_hash (32 bytes)
     let fiber_pubkey = CompressedPubkey::from_slice(&hex::decode(
-        "02aa3beb0d770fe835db99bf894fb2d9afaf4df0d5ec1871fad731d4fc6c90faed",
+        "028db409b3f88502105c58cf698d0f16c13d5cb167f4c968973a356776f0e03f9e",
     )?)
     .unwrap();
     let buyer_lock_hash =

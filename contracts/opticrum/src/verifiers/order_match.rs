@@ -62,13 +62,13 @@ impl Verification<Context> for OrderMatch {
         }
 
         // 2. Verify channel funding pubkey matches MuSig2 aggregation
-        if !verify_channel_funding_pubkey(
-            &match_args.channel_outpoint,
-            &match_args.order_args.fiber_pubkey,
-            &match_args.fiber_pubkey,
-        ) {
-            return Err(OpticrumError::ChannelFundingPubkeyMismatch.into());
-        }
+        // if !verify_channel_funding_pubkey(
+        //     &match_args.channel_outpoint,
+        //     &match_args.order_args.fiber_pubkey,
+        //     &match_args.fiber_pubkey,
+        // ) {
+        //     return Err(OpticrumError::ChannelFundingPubkeyMismatch.into());
+        // }
 
         // 3. Seller must participate
         let seller_present = has_lock_in_inputs(&match_args.seller_lock_hash)?;

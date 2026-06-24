@@ -9,14 +9,14 @@ TOP := $(cur_dir)
 CUSTOM_RUSTFLAGS := -C debug-assertions
 # RUSTFLAGS that are less likely to be tweaked by developers. Most likely
 # one would want to keep the default values here.
-FULL_RUSTFLAGS := -C target-feature=+zba,+zbb,+zbc,+zbs $(CUSTOM_RUSTFLAGS)
+FULL_RUSTFLAGS := -C target-feature=+zba,+zbb,+zbc,+zbs -C passes=lower-atomic $(CUSTOM_RUSTFLAGS)
 # Additional cargo args to append here. For example, one can use
 # make test CARGO_ARGS="-- --nocapture" so as to inspect data emitted to
 # stdout in unit tests
 CARGO_ARGS :=
 MODE := release
 # Tweak this to change the clang version to use for building C code. By default
-# we use a bash script with somes heuristics to find clang in current system.
+# we use a bash script with some heuristics to find clang in current system.
 CLANG := $(shell $(TOP)/scripts/find_clang)
 AR := $(subst clang,llvm-ar,$(CLANG))
 OBJCOPY := $(subst clang,llvm-objcopy,$(CLANG))
@@ -64,7 +64,7 @@ fmt:
 # Arbitrary cargo command is supported here. For example:
 #
 # make cargo CARGO_CMD=expand CARGO_ARGS="--ugly"
-# 
+#
 # Invokes:
 # cargo expand --ugly
 CARGO_CMD :=
