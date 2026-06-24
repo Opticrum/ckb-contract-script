@@ -6,6 +6,7 @@ define_errors!(OpticrumError, {
     BadOrderMatch,
     ChannelCellNotInDep,
     ChannelCapacityMismatch,
+    ChannelFundingPubkeyMismatch,
     OrderDataNotSet,
     BadXudtAmount,
 

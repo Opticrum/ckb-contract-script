@@ -12,14 +12,15 @@ use ckb_std::{
     high_level::{
         load_cell_capacity, load_cell_data, load_cell_lock, load_cell_lock_hash,
         load_cell_occupied_capacity, load_cell_type, load_cell_type_hash, load_header,
-        load_input_out_point, QueryIter,
+        load_transaction, QueryIter,
     },
 };
 
 use crate::{
-    error::OpticrumError, FIBER_FUNDING_TYPE_ID_MAINNET, FIBER_FUNDING_TYPE_ID_TESTNET,
-    MOCK_FIBER_FUNDING_TYPE_HASH,
+    error::OpticrumError, FIBER_FUNDING_TYPE_ID_MAINNET, FIBER_FUNDING_TYPE_ID_MOCK,
+    FIBER_FUNDING_TYPE_ID_TESTNET,
 };
+use opticrum_protocol::keyagg;
 
 // Re-export all protocol types from the canonical crate
 pub use opticrum_protocol::*;
@@ -31,7 +32,7 @@ pub use opticrum_protocol::*;
 #[macro_export]
 macro_rules! ERR {
     ($result:expr, $err:ident) => {
-        crate::utils::map_proto_err($result, OpticrumError::$err)
+        $crate::utils::map_proto_err($result, $crate::OpticrumError::$err)
     };
 }
 
@@ -68,6 +69,60 @@ pub fn has_lock_in_inputs(lock_hash: &[u8]) -> Result<bool> {
 // Channel cell lookup
 // ---------------------------------------------------------------------------
 
+/// Returns true if the type hash is a recognized Fiber funding type.
+fn is_fiber_funding_type_hash(hash: &[u8; 32]) -> bool {
+    *hash == FIBER_FUNDING_TYPE_ID_TESTNET
+        || *hash == FIBER_FUNDING_TYPE_ID_MAINNET
+        || *hash == FIBER_FUNDING_TYPE_ID_MOCK
+}
+
+/// Find the CellDep index of a channel cell matching `channel_outpoint`.
+///
+/// Outpoints are read from the transaction `cell_deps` table via `load_transaction`.
+/// `load_input_out_point` only works for inputs, not cell deps.
+///
+/// When the mock type hash is not the all-zero wildcard, also requires a Fiber
+/// funding type script on the cell.
+pub fn find_channel_celldep_index(channel_outpoint: &OutPoint) -> Option<usize> {
+    let tx = load_transaction().ok()?;
+    for (i, dep) in tx.raw().cell_deps().into_iter().enumerate() {
+        if !channel_outpoint.matches(&dep.out_point()) {
+            continue;
+        }
+        if FIBER_FUNDING_TYPE_ID_MOCK != [0u8; 32] {
+            let hash = load_cell_type_hash(i, Source::CellDep).ok()??;
+            if !is_fiber_funding_type_hash(&hash) {
+                continue;
+            }
+        }
+        return Some(i);
+    }
+    None
+}
+
+/// Verify that the channel CellDep lock args match the MuSig2-aggregated funding key.
+///
+/// Fiber funding cells store `blake160(x_only_aggregated_pubkey)` in lock args.
+pub fn verify_channel_funding_pubkey(
+    channel_outpoint: &OutPoint,
+    buyer_pk: &CompressedPubkey,
+    seller_pk: &CompressedPubkey,
+) -> bool {
+    let Some(i) = find_channel_celldep_index(channel_outpoint) else {
+        return false;
+    };
+    let Ok(lock) = load_cell_lock(i, Source::CellDep) else {
+        return false;
+    };
+    let channel_args = lock.args().raw_data().to_vec();
+    let Ok(xonly) = keyagg::aggregate_funding_keys_xonly(buyer_pk, seller_pk) else {
+        return false;
+    };
+    let hash = ckb_hash::blake2b_256(xonly);
+    channel_args.len() == FIBER_FUNDING_LOCK_ARGS_LEN
+        && channel_args.as_slice() == &hash[..FIBER_FUNDING_LOCK_ARGS_LEN]
+}
+
 /// Find a cell in CellDeps matching the given channel outpoint and type.
 ///
 /// Verifies the channel cell exists in CellDeps with the correct outpoint
@@ -86,51 +141,47 @@ pub fn find_channel_in_celldeps(
     min_xudt_amount: Option<u128>,
     xudt_type_script: Option<Option<&Script>>,
 ) -> bool {
-    // All-zeros mock hash acts as wildcard: skip all channel checks
-    if MOCK_FIBER_FUNDING_TYPE_HASH == [0u8; 32] {
+    let Ok(tx) = load_transaction() else {
+        return false;
+    };
+    for (i, dep) in tx.raw().cell_deps().into_iter().enumerate() {
+        if !channel_outpoint.matches(&dep.out_point()) {
+            continue;
+        }
+        if FIBER_FUNDING_TYPE_ID_MOCK != [0u8; 32] {
+            let Some(hash) = load_cell_type_hash(i, Source::CellDep).ok().flatten() else {
+                continue;
+            };
+            if !is_fiber_funding_type_hash(&hash) {
+                continue;
+            }
+        }
+        if let Some(xudt_type_script) = xudt_type_script {
+            let type_script = load_cell_type(i, Source::CellDep).unwrap();
+            if type_script.as_ref() != xudt_type_script {
+                continue;
+            }
+        }
+        if let Some(amount) = min_xudt_amount {
+            let cell_data = load_cell_data(i, Source::CellDep).unwrap_or_default();
+            if cell_data.len() < XUDT_AMOUNT_LEN {
+                continue;
+            }
+            let xudt_amount =
+                u128::from_le_bytes(cell_data[0..XUDT_AMOUNT_LEN].try_into().unwrap());
+            if xudt_amount < amount {
+                continue;
+            }
+        }
+        if let Some(cap) = min_capacity {
+            let capacity = load_cell_capacity(i, Source::CellDep).unwrap_or(0);
+            if capacity < cap {
+                continue;
+            }
+        }
         return true;
     }
-    QueryIter::new(load_cell_type_hash, Source::CellDep)
-        .enumerate()
-        .any(|(i, hash)| {
-            let Some(hash) = hash else {
-                return false;
-            };
-            if hash != FIBER_FUNDING_TYPE_ID_TESTNET
-                && hash != FIBER_FUNDING_TYPE_ID_MAINNET
-                && hash != MOCK_FIBER_FUNDING_TYPE_HASH
-            {
-                return false;
-            }
-            let out_point = load_input_out_point(i, Source::CellDep).unwrap_or_default();
-            if !channel_outpoint.matches(&out_point) {
-                return false;
-            }
-            if let Some(xudt_type_script) = xudt_type_script {
-                let type_script = load_cell_type(i, Source::CellDep).unwrap();
-                if type_script.as_ref() != xudt_type_script {
-                    return false;
-                }
-            }
-            if let Some(amount) = min_xudt_amount {
-                let cell_data = load_cell_data(i, Source::CellDep).unwrap_or_default();
-                if cell_data.len() < XUDT_AMOUNT_LEN {
-                    return false;
-                }
-                let xudt_amount =
-                    u128::from_le_bytes(cell_data[0..XUDT_AMOUNT_LEN].try_into().unwrap());
-                if xudt_amount < amount {
-                    return false;
-                }
-            }
-            if let Some(cap) = min_capacity {
-                let capacity = load_cell_capacity(i, Source::CellDep).unwrap_or_default();
-                if capacity < cap {
-                    return false;
-                }
-            }
-            true
-        })
+    false
 }
 
 /// Parse xudt amount and type from cell data.

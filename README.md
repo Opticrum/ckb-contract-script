@@ -27,7 +27,7 @@ Two Cell states discriminated by lock script `args` length:
 | State | Args Length | Contents |
 |-------|------------|----------|
 | **Order** | 65 bytes | `fiber_pubkey` (33) + `buyer_lock_hash` (32) |
-| **Match** | 133 bytes | Order args (65) + `channel_outpoint` (36) + `seller_lock_hash` (32) |
+| **Match** | 166 bytes | Order args (65) + `channel_outpoint` (36) + `seller_lock_hash` (32) + `fiber_pubkey` (33, seller) |
 
 ### Cell Data Layout
 
@@ -67,7 +67,17 @@ The `rent_per_block` is set once at match time and never changes.
 **Channel OutPoint instead of Lock Hash.** Match args store a `channel_outpoint`
 (36 bytes: tx_hash[32] + index[4] u32 LE) rather than a raw lock hash (32 bytes).
 The verifier looks up the channel cell by outpoint to confirm both its existence and
-its capacity — stronger than just comparing a hash.
+its capacity — stronger than just comparing a hash. Cell-dep outpoints are read
+from the transaction via `load_transaction()` (CKB's `load_input_out_point` only
+works for inputs, not cell deps).
+
+**MuSig2 channel funding verification.** Fiber channels are funded by a 2-of-2
+MuSig2 key. The on-chain funding cell stores `blake160(x_only_aggregated_pubkey)`
+(20 bytes) in its lock args. At match time the contract recomputes the aggregated
+x-only key from the buyer pubkey (`order_args.fiber_pubkey`) and the seller pubkey
+(`match_args.fiber_pubkey`, declared in Match args) and checks it against the
+channel CellDep lock args. Aggregation is implemented in `opticrum-protocol/src/keyagg.rs`
+(BIP-327 MuSig2*, matching Fiber's deterministic key ordering).
 
 ## Project Structure
 
@@ -81,11 +91,13 @@ opticrum/
 │   │   ├── order_match.rs    # Seller matches order with channel
 │   │   ├── match_extract.rs  # Seller withdraws linear rent
 │   │   └── match_destroy.rs  # Exhausted match swept by seller or buyer
-│   ├── src/utils.rs          # Channel lookup, authorization, header helpers
+│   ├── src/utils.rs          # Channel lookup (load_transaction), MuSig2 lock verification
 │   └── src/error.rs          # OpticrumError enum via define_errors! macro
 ├── opticrum-protocol/        # Shared canonical data layouts (no_std + std)
-│   └── src/lib.rs            # OrderArgs, OrderData, MatchArgs, MatchData,
-│                             #   OutPoint, all length constants
+│   ├── src/lib.rs            # OrderArgs, OrderData, MatchArgs, MatchData,
+│   │                         #   OutPoint, CompressedPubkey, length constants
+│   └── src/keyagg.rs         # BIP-327 MuSig2* 2-of-2 funding key aggregation
+│                             #   (optional `musig2` feature; enabled for contract)
 ├── calculator/opticrum/      # Off-chain transaction assembly
 │   ├── src/lib.rs            # Module declarations, re-exports
 │   ├── src/calculator.rs     # create_order, cancel_order, match_order,
@@ -95,7 +107,7 @@ opticrum/
 │   ├── src/reader.rs         # scan_orders, scan_matches, get_order/matched_info
 │   └── src/config.rs         # Contract name, type_id, constants
 ├── src/main.rs               # CLI runner: deploy/migrate/consume
-├── tests/                    # Integration tests (CKB simulator + FakeRpcClient)
+├── tests/                    # Integration tests (CKB simulator; MuSig2 channel verification)
 ├── scripts/                  # find_clang, reproducible_build_docker
 └── Makefile                  # Top-level: build, test, check, clippy, fmt
 ```
@@ -103,7 +115,7 @@ opticrum/
 ### Crate Dependency Graph
 
 ```
-opticrum-protocol (canonical byte layouts, no_std)
+opticrum-protocol (canonical byte layouts, no_std; optional musig2 key aggregation)
     ↑                   ↑
 contracts/opticrum    calculator/opticrum
 (no_std, RISC-V)      (std, off-chain)
@@ -122,7 +134,7 @@ Root (always runs first)
 ├── args_len == 65 (Order)
 │   ├── Burn     → "order_cancel"
 │   └── Transfer → "order_match"
-└── args_len == 133 (Match)
+└── args_len == 166 (Match)
     ├── Transfer → "match_extract"
     └── Burn     → "match_destroy"
 ```
@@ -162,12 +174,13 @@ Inputs:    [Order Cell (Burn), Buyer's cell]
 
 Seller matches an Order by referencing a pre-created Fiber channel. The channel
 cell is added as a CellDep (not consumed). The verifier checks:
-1. Channel Cell exists in CellDeps with matching OutPoint and Fiber funding type ID, sufficient capacity
-2. Match args' first 65 bytes match Order args
-3. Match data initialized (rent_per_block > 0, escrow_blocks > 0, last_extraction_block == 0)
-4. Match capacity equals Order capacity (rent transferred intact)
-5. xUDT amount unchanged from Order to Match
-6. Seller authorizes the transaction
+1. Channel Cell exists in CellDeps with matching OutPoint, Fiber funding type ID, and sufficient capacity (and/or xUDT amount for token orders)
+2. Channel lock args match MuSig2 aggregation of buyer + seller fiber pubkeys (`blake160(x_only_key)`)
+3. Match args' first 65 bytes match Order args
+4. Match data initialized (rent_per_block > 0, escrow_blocks > 0, last_extraction_block == 0)
+5. Match capacity equals Order capacity (rent transferred intact)
+6. xUDT amount unchanged from Order to Match
+7. Seller authorizes the transaction
 
 ```
 CellDeps:  [Opticrum contract, Channel Cell]
@@ -186,7 +199,7 @@ Seller withdraws linearly-vested rent from a Match Cell. The verifier checks:
 6. Output cell remains viable (capacity >= occupied)
 
 ```
-CellDeps:       [Opticrum contract]
+CellDeps:       [Opticrum contract, Channel Cell]
 HeaderDeps:     [tip_header] ( + creation_header on first extraction)
 Inputs:         [Match Cell (Transfer), Seller's cell]
 Outputs:        [Updated Match Cell, Seller cell + rent]
@@ -226,9 +239,11 @@ full remaining capacity (+ xUDT) is released and no updated Match Cell is produc
 |------|--------|------|
 | `OrderArgs` | `fiber_pubkey` (33), `buyer_lock_hash` (32) | 65 bytes |
 | `OrderData` | `xudt_amount` (u128), `channel_capacity` (u64), `escrow_blocks` (u64) | 32 bytes |
-| `MatchArgs` | `order_args` (65), `channel_outpoint` (36), `seller_lock_hash` (32) | 133 bytes |
+| `MatchArgs` | `order_args` (65), `channel_outpoint` (36), `seller_lock_hash` (32), `fiber_pubkey` (33, seller) | 166 bytes |
 | `MatchData` | `xudt_amount` (u128), `rent_per_block` (f64), `escrow_blocks` (u64), `last_extraction_block` (u64) | 40 bytes |
 | `OutPoint` | `tx_hash` (32), `index` (u32) | 36 bytes |
+| `CompressedPubkey` | 33-byte compressed secp256k1 public key | 33 bytes |
+| `FIBER_FUNDING_LOCK_ARGS_LEN` | blake160(x-only aggregated MuSig2 pubkey) | 20 bytes |
 | `Xudt` | `amount` (u128), `type_script` (Script) | — |
 | `AnnualYield` | `percentage` (u8) | — |
 | `OrderInfo` | `order_args`, `order_data`, `xudt?`, `ckb_capacity`, `order_outpoint` | — |
@@ -268,6 +283,7 @@ make prepare        # rustup target add riscv64imac-unknown-none-elf
 | `BadOrderMatch` | Order matching validation failed |
 | `ChannelCellNotInDep` | Required Channel Cell not found in CellDeps |
 | `ChannelCapacityMismatch` | Order → Match capacity mismatch |
+| `ChannelFundingPubkeyMismatch` | Channel lock args do not match MuSig2-aggregated funding key |
 | `OrderDataNotSet` | Order data missing or malformed |
 | `BadXudtAmount` | xUDT amount mismatch between Order and Match |
 | `BadExtractionAmount` | Rent extraction amount differs from computed value |
@@ -276,7 +292,7 @@ make prepare        # rustup target add riscv64imac-unknown-none-elf
 | `BadMatchDataUpdate` | Match data fields incorrectly updated |
 | `MatchAlreadyExhausted` | Attempt to extract from already-exhausted match |
 | `MatchNotExhausted` | Attempt to destroy before match is exhausted |
-| `BadArgsLength` | Lock args wrong length (not 65 or 133) |
+| `BadArgsLength` | Lock args wrong length (not 65 or 166) |
 | `BuyerAuthMissing` | Buyer not found in transaction inputs |
 | `SellerAuthMissing` | Seller not found in transaction inputs |
 | `AuthorizationMissing` | Neither seller nor buyer found in inputs (destroy) |

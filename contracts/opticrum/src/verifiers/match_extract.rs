@@ -61,11 +61,10 @@ impl Verification<Context> for MatchExtract {
         // 4. Validate extraction amount matches linear rent
         let expected_rent = ctx.old_state.liquidity_rent();
         let new_state = ctx.new_state.as_ref().unwrap();
-        if ctx.old_state.xudt.is_some() {
+        if let Some((old_xudt, _)) = &ctx.old_state.xudt {
             let Branch::Match(_, new_match_data) = &new_state.branch else {
                 return Err(OpticrumError::UnexpectedBranch.into());
             };
-            let (old_xudt, _) = ctx.old_state.xudt.as_ref().unwrap();
             let extracted = old_xudt.saturating_sub(new_match_data.xudt_amount);
             if extracted != expected_rent as u128 {
                 return Err(OpticrumError::BadExtractionAmount.into());

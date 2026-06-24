@@ -20,7 +20,7 @@ Order Cell (buyer creates, 65-byte lock args + 32-byte data)
 
 Two Cell states discriminated by lock script `args` length:
 - **Order** (65 bytes): Fiber Pubkey (33) + Buyer Lock Hash (32)
-- **Match** (133 bytes): Order args (65) + Channel OutPoint (36) + Seller Lock Hash (32)
+- **Match** (166 bytes): Order args (65) + Channel OutPoint (36) + Seller Lock Hash (32) + Seller Fiber Pubkey (33)
 
 **Order Cell data** (32 bytes): xUDT Amount (u128 LE, 16) + Channel Capacity (u64 LE, 8) + Escrow Blocks (u64 LE, 8)
 **Match Cell data** (32 bytes): xUDT Amount (u128 LE, 16) + Rent Per Block (f64 LE, 8) + Last Extraction Blocknumber (u64 LE, 8)
@@ -44,7 +44,7 @@ schedule.
 looks up the channel cell by outpoint to confirm both its existence and its
 capacity, which is stronger than just comparing a hash.
 
-These changes shrink Order args from 68 → 65 bytes and Match args from 120 → 133 bytes.
+These changes shrink Order args from 68 → 65 bytes and Match args from 120 → 166 bytes (includes seller fiber_pubkey).
 
 ## Project Structure
 
@@ -106,7 +106,7 @@ Root (always runs first)
 ├── args_len == 65 (Order)
 │   ├── Burn     → "order_cancel"
 │   └── Transfer → "order_match"
-└── args_len == 133 (Match)
+└── args_len == 166 (Match)
     ├── Transfer → "match_extract"
     └── Burn     → "match_destroy"
 ```
@@ -143,7 +143,7 @@ When `accumulated_rent >= remaining_capacity`, the match is **exhausted** — th
 |------|--------|-------|
 | `OrderArgs` | fiber_pubkey, buyer_lock_hash | 65 |
 | `OrderData` | xudt_amount, channel_capacity, escrow_blocks | 32 |
-| `MatchArgs` | order_args, channel_outpoint, seller_lock_hash | 133 |
+| `MatchArgs` | order_args, channel_outpoint, seller_lock_hash, fiber_pubkey (seller) | 166 |
 | `MatchData` | xudt_amount, rent_per_block, last_extraction_block | 32 |
 | `Xudt` | amount (u128), type_script (Script) | — |
 | `AnnualYield` | percentage (u8) | — |

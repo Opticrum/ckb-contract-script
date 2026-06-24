@@ -13,14 +13,22 @@
 // Length constants
 // ---------------------------------------------------------------------------
 
-use ckb_cinnabar_verifier::re_exports::ckb_std::ckb_types::{packed, prelude::Unpack};
+use ckb_cinnabar_verifier::re_exports::ckb_std::ckb_types::{packed, prelude::Entity};
+
+/// BIP-327 MuSig2* key aggregation for the 2-of-2 funding key.
+/// Opt-in via the `musig2` feature so the on-chain contract build stays lean.
+#[cfg(feature = "musig2")]
+pub mod keyagg;
 
 pub const FIBER_PUBKEY_LEN: usize = 33; // 1-byte prefix + 32-byte x-coordinate
 pub const LOCK_HASH_LEN: usize = 32;
 
 pub const ORDER_ARGS_LEN: usize = FIBER_PUBKEY_LEN + LOCK_HASH_LEN; // 65
 pub const CHANNEL_OUTPOINT_LEN: usize = 32 + 4; // 36: tx_hash[32] + index[4] (u32 LE)
-pub const MATCH_ARGS_LEN: usize = ORDER_ARGS_LEN + CHANNEL_OUTPOINT_LEN + LOCK_HASH_LEN; // 133
+pub const MATCH_ARGS_LEN: usize =
+    ORDER_ARGS_LEN + CHANNEL_OUTPOINT_LEN + LOCK_HASH_LEN + FIBER_PUBKEY_LEN; // 166
+/// Fiber funding lock args: blake160(x-only aggregated MuSig2 pubkey).
+pub const FIBER_FUNDING_LOCK_ARGS_LEN: usize = 20;
 
 pub const XUDT_AMOUNT_LEN: usize = 16;
 pub const CHANNEL_CAPACITY_LEN: usize = 8;
@@ -70,7 +78,7 @@ impl OutPoint {
     }
 
     pub fn matches(&self, other: &packed::OutPoint) -> bool {
-        self.tx_hash == other.tx_hash().unpack() && self.index == other.index().unpack()
+        other.as_slice() == self.to_bytes().as_slice()
     }
 }
 
@@ -235,15 +243,20 @@ impl OrderData {
 }
 
 // ---------------------------------------------------------------------------
-// MatchArgs — 133-byte Match Cell lock args
+// MatchArgs — 166-byte Match Cell lock args
 // ---------------------------------------------------------------------------
-// Layout: OrderArgs[65] | channel_outpoint[36] | seller_lock_hash[32]
+// Layout: OrderArgs[65] | channel_outpoint[36] | seller_lock_hash[32] | fiber_pubkey[33]
+//
+// `order_args.fiber_pubkey` is the buyer's Fiber channel funding pubkey.
+// `fiber_pubkey` is the seller's Fiber channel funding pubkey (added at match time).
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MatchArgs {
     pub order_args: OrderArgs,
     pub channel_outpoint: OutPoint,
     pub seller_lock_hash: [u8; LOCK_HASH_LEN],
+    /// Seller's Fiber channel funding pubkey (33-byte compressed secp256k1).
+    pub fiber_pubkey: CompressedPubkey,
 }
 
 impl MatchArgs {
@@ -251,11 +264,13 @@ impl MatchArgs {
         order_args: OrderArgs,
         channel_outpoint: OutPoint,
         seller_lock_hash: [u8; LOCK_HASH_LEN],
+        fiber_pubkey: CompressedPubkey,
     ) -> Self {
         Self {
             order_args,
             channel_outpoint,
             seller_lock_hash,
+            fiber_pubkey,
         }
     }
 
@@ -270,10 +285,14 @@ impl MatchArgs {
         let seller_offset = ORDER_ARGS_LEN + CHANNEL_OUTPOINT_LEN;
         let mut seller_lock_hash = [0u8; LOCK_HASH_LEN];
         seller_lock_hash.copy_from_slice(&args[seller_offset..seller_offset + LOCK_HASH_LEN]);
+        let fiber_pubkey = CompressedPubkey::from_slice(
+            &args[seller_offset + LOCK_HASH_LEN..seller_offset + LOCK_HASH_LEN + FIBER_PUBKEY_LEN],
+        )?;
         Ok(Self {
             order_args,
             channel_outpoint,
             seller_lock_hash,
+            fiber_pubkey,
         })
     }
 
@@ -282,8 +301,10 @@ impl MatchArgs {
         buf[0..ORDER_ARGS_LEN].copy_from_slice(&self.order_args.to_bytes());
         buf[ORDER_ARGS_LEN..ORDER_ARGS_LEN + CHANNEL_OUTPOINT_LEN]
             .copy_from_slice(&self.channel_outpoint.to_bytes());
-        buf[ORDER_ARGS_LEN + CHANNEL_OUTPOINT_LEN..MATCH_ARGS_LEN]
-            .copy_from_slice(&self.seller_lock_hash);
+        let seller_offset = ORDER_ARGS_LEN + CHANNEL_OUTPOINT_LEN;
+        buf[seller_offset..seller_offset + LOCK_HASH_LEN].copy_from_slice(&self.seller_lock_hash);
+        buf[seller_offset + LOCK_HASH_LEN..MATCH_ARGS_LEN]
+            .copy_from_slice(&self.fiber_pubkey.to_bytes());
         buf
     }
 }

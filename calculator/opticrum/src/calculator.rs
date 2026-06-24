@@ -189,7 +189,7 @@ pub fn cancel_order<T: RPC>(buyer: Address, order_info: OrderInfo) -> Instructio
 /// Outputs:
 ///   [0] Match Cell (produced from Order Cell)
 ///       lock:   Opticrum (MATCH_ARGS_LEN-byte args: Order args
-///                         + channel_outpoint + seller_lock_hash)
+///                         + channel_outpoint + seller_lock_hash + fiber_pubkey)
 ///       type:   none
 ///       data:   MatchData (MATCH_DATA_LEN bytes, last_extraction=0)
 ///       capacity: rent_capacity (MUST equal Inputs[0].capacity)
@@ -320,6 +320,13 @@ pub fn extract_rent<T: RPC>(
     // If the match is exhausted, return the remaining xudt or ckb to the seller
     let mut operations: Vec<Box<dyn Operation<T>>> = vec![
         Box::new(AddOpticrumContractCelldep {}),
+        Box::new(AddCellDep {
+            name: "fiber_channel".into(),
+            tx_hash: match_info.match_args.channel_outpoint.tx_hash.into(),
+            index: match_info.match_args.channel_outpoint.index,
+            dep_type: DepType::Code,
+            with_data: true,
+        }),
         Box::new(AddHeaderDepByBlockNumber {
             block_number: tip_block,
         }),

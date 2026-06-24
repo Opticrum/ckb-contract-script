@@ -29,13 +29,18 @@ Stored as the cell's `data` field.
 | Channel Capacity | 16 | 8 | u64 LE |
 | Escrow Blocks | 24 | 8 | u64 LE |
 
-### Match Cell (133-byte args)
+### Match Cell (166-byte args)
 
 | Field | Offset | Size | Type |
 |-------|--------|------|------|
-| *(Order fields)* | 0 | 65 | *(same as Order args)* |
+| *(Order fields)* | 0 | 65 | *(same as Order args — buyer fiber pubkey + buyer lock hash)* |
 | Channel OutPoint | 65 | 36 | tx_hash[32] + index[4] (u32 LE) |
 | Seller Lock Hash | 101 | 32 | bytes |
+| Seller Fiber Pubkey | 133 | 33 | compressed secp256k1 (seller's channel funding key) |
+
+`order_args.fiber_pubkey` is the **buyer's** Fiber funding pubkey (carried from Order).
+`fiber_pubkey` is the **seller's** Fiber funding pubkey, added at match time for on-chain
+MuSig2 verification against the channel CellDep lock args.
 
 ### Match Cell Data (40 bytes)
 
@@ -57,7 +62,7 @@ Root
 ├── args_len == 65 (Order)
 │   ├── Burn     → OrderCancel
 │   └── Transfer → OrderMatch
-└── args_len == 133 (Match)
+└── args_len == 166 (Match)
     ├── Transfer → MatchExtract
     └── Burn     → MatchDestroy
 ```
@@ -84,12 +89,15 @@ Buyer reclaims an unmatched Order Cell.
 Seller matches an Order by referencing a pre-created Fiber channel.
 
 **Checks:**
-1. Channel Cell exists in CellDeps with matching OutPoint and Fiber funding type ID, and sufficient capacity and/or xUDT amount (depending on Order type)
-2. Match Cell args correctly extend Order args (first 65 bytes must match)
-3. Match Cell data initialized: `rent_per_block > 0`, `escrow_blocks > 0`, `last_extraction_block == 0`
-4. Match Cell capacity equals Order Cell capacity (rent transferred intact)
-5. xUDT amount unchanged from Order to Match
-6. Seller's lock hash appears in transaction inputs
+1. Channel Cell exists in CellDeps with matching OutPoint, Fiber funding type ID, and sufficient capacity and/or xUDT amount (depending on Order type)
+2. Channel lock args equal `blake160(x_only MuSig2 aggregated key)` from buyer + seller fiber pubkeys
+3. Match Cell args correctly extend Order args (first 65 bytes must match)
+4. Match Cell data initialized: `rent_per_block > 0`, `escrow_blocks > 0`, `last_extraction_block == 0`
+5. Match Cell capacity equals Order Cell capacity (rent transferred intact)
+6. xUDT amount unchanged from Order to Match
+7. Seller's lock hash appears in transaction inputs
+
+**Channel lookup:** Cell-dep outpoints are resolved by iterating `load_transaction().raw().cell_deps()` — `load_input_out_point` only works for inputs. At the matched index, `load_cell_*` syscalls read capacity, type, and lock args.
 
 ### 3. Extract Rent (`MatchExtract`)
 
@@ -100,7 +108,7 @@ Seller withdraws linearly-vested rent from a Match Cell.
 If `last_extraction_block == 0` (never extracted), the creation block from `HeaderDeps[1]` is used instead.
 
 **Checks:**
-1. Channel cell still exists in CellDeps (existence only — amounts already verified at match time)
+1. Channel cell still exists in CellDeps at the same OutPoint (existence only — amounts and funding key already verified at match time)
 2. Seller's lock hash appears in transaction inputs
 3. Match is not already exhausted (`accumulated_rent < remaining_capacity`)
 4. Extraction amount exactly equals the computed linear rent
@@ -128,6 +136,7 @@ This is the safety valve against abandoned matches — once enough rent has vest
 | `BadOrderMatch` | Order matching validation failed |
 | `ChannelCellNotInDep` | Required Channel Cell not found in CellDeps |
 | `ChannelCapacityMismatch` | Order → Match capacity mismatch |
+| `ChannelFundingPubkeyMismatch` | Channel lock args do not match MuSig2-aggregated funding key |
 | `OrderDataNotSet` | Order data missing or malformed |
 | `BadXudtAmount` | xUDT amount mismatch between Order and Match |
 | `BadExtractionAmount` | Rent extraction amount differs from computed value |
@@ -136,7 +145,7 @@ This is the safety valve against abandoned matches — once enough rent has vest
 | `BadMatchDataUpdate` | Match data fields incorrectly updated during extraction |
 | `MatchAlreadyExhausted` | Attempt to extract from already-exhausted match |
 | `MatchNotExhausted` | Attempt to destroy before match is exhausted |
-| `BadArgsLength` | Lock args wrong length (not 65 or 133) |
+| `BadArgsLength` | Lock args wrong length (not 65 or 166) |
 | `BuyerAuthMissing` | Buyer not found in transaction inputs |
 | `SellerAuthMissing` | Seller not found in transaction inputs |
 | `AuthorizationMissing` | Neither seller nor buyer found in inputs (destroy) |
@@ -161,13 +170,24 @@ Output: `build/release/opticrum` (stripped RISC-V binary) and `build/release/opt
 ## Dependencies
 
 - `ckb-cinnabar-verifier` — `no_std` verification primitives, macros (`cinnabar_main!`, `define_errors!`), CKB std re-exports
-- `opticrum-protocol` — Canonical byte-level data layouts shared with the calculator
+- `opticrum-protocol` — Canonical byte-level data layouts; `musig2` feature enables `keyagg` module
+- `ckb-hash` — blake160 for funding lock args comparison
 - Rust target: `riscv64imac-unknown-none-elf`
 - RISC-V extensions: `+zba,+zbb,+zbc,+zbs`
 
+## Fiber Funding Type IDs
+
+The contract recognizes these channel type-script hashes (see `src/main.rs`):
+
+| Constant | Purpose |
+|----------|---------|
+| `FIBER_FUNDING_TYPE_ID_MAINNET` | Production Fiber funding cells |
+| `FIBER_FUNDING_TYPE_ID_TESTNET` | Testnet Fiber funding cells |
+| `FIBER_FUNDING_TYPE_ID_MOCK` | Integration-test mock channel type script |
+
 ## Related Crates
 
-- `opticrum-protocol` (`opticrum-protocol/`) — Shared canonical data layouts (OrderArgs, OrderData, MatchArgs, MatchData, OutPoint, length constants)
+- `opticrum-protocol` (`opticrum-protocol/`) — Shared canonical data layouts and MuSig2 key aggregation (`keyagg.rs`)
 - `opticrum-calculator` (`calculator/opticrum/`) — Off-chain transaction assembly and argument construction
 - `opticrum-runner` (`src/`) — CLI for deploy/migrate/consume
 - `opticrum-tests` (`tests/`) — Integration tests via CKB transaction simulator

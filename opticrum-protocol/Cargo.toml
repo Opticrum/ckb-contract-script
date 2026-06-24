@@ -5,3 +5,17 @@ edition = "2021"
 
 [dependencies]
 ckb-cinnabar-verifier = { workspace = true }
+secp256k1 = { version = "0.30", default-features = false, features = ["alloc"], optional = true }
+sha2 = { version = "0.10", default-features = false, optional = true }
+
+[features]
+# Opt-in BIP-327 MuSig2* key aggregation. Off by default so the on-chain
+# contract build (riscv64imac-unknown-none-elf) pulls in zero extra deps.
+musig2 = ["dep:secp256k1", "dep:sha2"]
+
+[dev-dependencies]
+# The exact reference stack Fiber depends on (crates/fiber-lib/Cargo.toml),
+# used as the oracle in keyagg module tests.
+musig2 = { version = "0.2.4", features = ["secp256k1"] }
+secp256k1 = { version = "0.30", features = ["std", "rand"] }
+rand = "0.8"

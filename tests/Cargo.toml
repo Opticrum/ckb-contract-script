@@ -6,4 +6,6 @@ edition = "2021"
 [dependencies]
 ckb-cinnabar-calculator = { workspace = true }
 opticrum-calculator = { path = "../calculator/opticrum" }
+opticrum-protocol = { path = "../opticrum-protocol", features = ["musig2"] }
+secp256k1 = { version = "0.30", features = ["std"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -29,10 +29,14 @@ pub const FIBER_FUNDING_TYPE_ID_MAINNET: [u8; 32] = [
     0x36, 0xa9, 0x81, 0xde, 0xec, 0x3e, 0x78, 0x20, 0x19, 0x4b, 0x9c, 0x04, 0x29, 0x67, 0xf4, 0xf1,
 ];
 
-/// Mock Fiber funding type hash for testing.
-/// When set to all-zeros, acts as a wildcard (accepts any channel).
-/// Otherwise, must match exactly.
-pub const MOCK_FIBER_FUNDING_TYPE_HASH: [u8; 32] = [0u8; 32];
+/// Mock Fiber funding type hash for integration tests.
+/// Matches the channel type script seeded in `tests/tests/opticrum_tests.rs`
+/// (`code_hash = [0xCC; 32]`, `hash_type = Data1`, empty args).
+pub const FIBER_FUNDING_TYPE_ID_MOCK: [u8; 32] = [
+    0x77, 0xc9, 0x16, 0x3a, 0xdd, 0xbf, 0x87, 0xc8, 0x05, 0xbe, 0x3b, 0x6c, 0x85, 0x69, 0xb8,
+    0xe0, 0x15, 0xa4, 0xca, 0x0e, 0xf3, 0xc6, 0x89, 0x15, 0x02, 0x34, 0xf0, 0xc8, 0x02, 0xa7,
+    0x69, 0x00,
+];
 
 #[derive(Default, PartialEq, Eq)]
 enum Branch {
@@ -46,12 +50,12 @@ impl Branch {
     pub fn parse(args: &[u8], data: &[u8]) -> Result<Self> {
         match args.len() {
             ORDER_ARGS_LEN => Ok(Branch::Order(
-                ERR!(OrderArgs::from_slice(&args), BadArgsLength)?,
-                ERR!(OrderData::from_slice(&data), OrderDataNotSet)?,
+                ERR!(OrderArgs::from_slice(args), BadArgsLength)?,
+                ERR!(OrderData::from_slice(data), OrderDataNotSet)?,
             )),
             MATCH_ARGS_LEN => Ok(Branch::Match(
-                ERR!(MatchArgs::from_slice(&args), BadArgsLength)?,
-                ERR!(MatchData::from_slice(&data), MatchDataNotSet)?,
+                ERR!(MatchArgs::from_slice(args), BadArgsLength)?,
+                ERR!(MatchData::from_slice(data), MatchDataNotSet)?,
             )),
             _ => Err(OpticrumError::BadArgsLength.into()),
         }

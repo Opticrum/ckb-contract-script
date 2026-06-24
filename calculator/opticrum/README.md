@@ -8,7 +8,7 @@ This crate provides high-level `Instruction` builders that compose ckb-cinnabar'
 
 It also provides on-chain readers that query the CKB indexer and parse raw cell data into typed structs (`OrderInfo`, `MatchInfo`).
 
-Protocol types (`OrderArgs`, `OrderData`, `MatchArgs`, `MatchData`, `OutPoint`, and all length constants) are defined canonically in `opticrum-protocol` and re-exported here.
+Protocol types (`OrderArgs`, `OrderData`, `MatchArgs`, `MatchData`, `OutPoint`, `CompressedPubkey`, and all length constants) are defined canonically in `opticrum-protocol` and re-exported here. MuSig2 funding-key aggregation for off-chain helpers lives in `opticrum-protocol::keyagg` (requires the `musig2` feature).
 
 ## Modules
 
@@ -57,9 +57,11 @@ Outputs:   [(xUDT return cell if applicable)]
 
 Consumes an Order Cell and produces a Match Cell. The pre-created Fiber channel cell is referenced as a CellDep (not consumed).
 
+- `MatchArgs` includes the seller's Fiber funding pubkey (`fiber_pubkey`, 33 bytes) in addition to the buyer pubkey carried in `order_args`
 - Computes `MatchData` with `rent_per_block = total_rent / escrow_blocks`
 - Match args embed the channel's `OutPoint` (36 bytes: tx_hash + index)
 - Match capacity MUST equal Order capacity (rent transferred intact)
+- On-chain verification checks the channel CellDep lock args against MuSig2 aggregation of both fiber pubkeys
 
 **Transaction structure:**
 ```
@@ -75,11 +77,12 @@ Seller withdraws linearly-vested rent from a Match Cell.
 - Linear formula: `extractable = rent_per_block × (tip_block - last_extraction_block)`
 - If `last_extraction_block == 0` (never extracted), the match creation block is used as the starting point
 - On first extraction, adds a `HeaderDep` at match creation block to prove the match's age
+- Includes the Fiber channel CellDep (same outpoint as at match time) so the contract can verify the channel still exists
 - If accumulated rent exceeds remaining capacity, delegates to `destroy_match` internally
 
 **Transaction structure:**
 ```
-CellDeps:    [Opticrum contract]
+CellDeps:    [Opticrum contract, Channel Cell]
 HeaderDeps:  [tip_header] (+ creation_header on first extraction)
 Inputs:      [Match Cell, Seller's cell]
 Outputs:     [Updated Match Cell, Seller cell + rent]
@@ -109,7 +112,7 @@ Scans all live Order cells on-chain using the CKB indexer. Queries cells with th
 
 ### `scan_matches(rpc) → Vec<MatchInfo>`
 
-Scans all live Match cells on-chain. Queries cells with the Opticrum lock whose args length is exactly `MATCH_ARGS_LEN` (133 bytes). Parses each into `MatchInfo`, including the block number at which the match was created (`match_current_block`).
+Scans all live Match cells on-chain. Queries cells with the Opticrum lock whose args length is exactly `MATCH_ARGS_LEN` (166 bytes). Parses each into `MatchInfo`, including the block number at which the match was created (`match_current_block`).
 
 Both use prefix search mode for efficient indexer queries. Results are paginated in batches of 50.
 
@@ -156,7 +159,7 @@ Parsed representation of a live Match cell on-chain.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `match_args` | `MatchArgs` | Parsed lock args (order_args + channel_outpoint + seller_lock_hash) |
+| `match_args` | `MatchArgs` | Parsed lock args (order_args + channel_outpoint + seller_lock_hash + seller fiber_pubkey) |
 | `match_data` | `MatchData` | Parsed cell data (xudt_amount + rent_per_block + escrow_blocks + last_extraction_block) |
 | `xudt` | `Option<Xudt>` | Token info if this is an xUDT match |
 | `ckb_capacity` | `u64` | Real rent capacity (total - occupied) |
@@ -188,7 +191,7 @@ An `Operation` that adds the Opticrum contract code cell as a CellDep to the tra
 ## Dependencies
 
 - `ckb-cinnabar-calculator` — Transaction skeleton, operations, RPC abstraction, indexer queries
-- `opticrum-protocol` — Canonical byte-level data layouts shared with the on-chain contract
+- `opticrum-protocol` — Canonical byte-level data layouts and optional MuSig2 key aggregation (`musig2` feature)
 
 ## Usage Example
 
@@ -196,7 +199,7 @@ An `Operation` that adds the Opticrum contract code cell as a CellDep to the tra
 use opticrum_calculator::{
     create_order, cancel_order, match_order, extract_rent,
     scan_orders, scan_matches,
-    types::{AnnualYield, OrderArgs, OrderData, MatchArgs},
+    types::{AnnualYield, CompressedPubkey, OrderArgs, OrderData, MatchArgs},
 };
 use opticrum_protocol::OutPoint;
 use ckb_cinnabar_calculator::{address::Address, rpc::RPC};
@@ -222,7 +225,13 @@ async fn example<T: RPC>(rpc: &T, buyer: Address, seller: Address) {
 
     // Match with a pre-created channel
     let channel_outpoint = OutPoint::new(channel_tx_hash, 0);
-    let match_args = MatchArgs::new(order_args.clone(), channel_outpoint, seller_lock_hash);
+    let seller_fiber_pubkey = CompressedPubkey::new(seller_funding_pubkey_bytes);
+    let match_args = MatchArgs::new(
+        order_args.clone(),
+        channel_outpoint,
+        seller_lock_hash,
+        seller_fiber_pubkey,
+    );
 
     let instruction = match_order(seller.clone(), order_info.clone(), match_args);
     // Execute instruction...
@@ -242,6 +251,6 @@ async fn example<T: RPC>(rpc: &T, buyer: Address, seller: Address) {
 
 ## Related Crates
 
-- `opticrum-protocol` (`opticrum-protocol/`) — Shared canonical byte-level data layouts
+- `opticrum-protocol` (`opticrum-protocol/`) — Shared canonical byte-level data layouts and MuSig2 key aggregation
 - `opticrum` (`contracts/opticrum/`) — On-chain RISC-V verification contract
 - `opticrum-runner` (`src/`) — CLI for deploy/migrate/consume

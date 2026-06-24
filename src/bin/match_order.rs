@@ -15,7 +15,7 @@ use ckb_cinnabar::calculator::{
 use opticrum_calculator::{
     calculator::match_order,
     reader::scan_orders,
-    types::{MatchArgs, OutPoint},
+    types::{CompressedPubkey, MatchArgs, OutPoint},
 };
 
 #[tokio::main]
@@ -48,10 +48,13 @@ pub async fn main() -> eyre::Result<()> {
         order.order_data.channel_capacity as f64 / ONE_CKB as f64
     );
 
+    let seller_fiber_pubkey = CompressedPubkey::new([0u8; 33]); // TODO: fill real seller funding pubkey
+
     let match_args = MatchArgs::new(
         order.order_args.clone(),
         OutPoint::new(channel_tx_hash, channel_index),
         seller_lock_hash.into(),
+        seller_fiber_pubkey,
     );
 
     let prepare = DefaultInstruction::new(vec![Box::new(AddSecp256k1SighashCellDep {})]);
