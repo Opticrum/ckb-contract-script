@@ -6,6 +6,7 @@ members = [
     "calculator/opticrum",
     "opticrum-protocol",
     "tests",
+    "secp256k1",
 ]
 
 [workspace.dependencies]

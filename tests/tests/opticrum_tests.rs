@@ -81,14 +81,96 @@ mod faker {
     }
 
     /// Fiber funding lock args: blake160(x-only MuSig2 aggregated key).
+    /// Uses an inline BIP-327 MuSig2* implementation (same algorithm as
+    /// the C on-chain function and the old `keyagg` module).
     pub fn funding_lock_args(buyer: &CompressedPubkey, seller: &CompressedPubkey) -> [u8; 20] {
-        use opticrum_protocol::keyagg;
-        let xonly =
-            keyagg::aggregate_funding_keys_xonly(buyer, seller).unwrap();
+        let xonly = aggregate_funding_keys_xonly(buyer, seller).unwrap();
         let hash = ckb_cinnabar_calculator::re_exports::ckb_hash::blake2b_256(xonly);
         let mut args = [0u8; 20];
         args.copy_from_slice(&hash[..20]);
         args
+    }
+
+    /// BIP-327 MuSig2* key aggregation for 2-of-2 (inline test helper).
+    ///
+    /// Replaces the deleted `opticrum_protocol::keyagg` module.  Uses the
+    /// same `secp256k1` v0.30 crate already available in test deps (for
+    /// keypair generation) plus `sha2` for tagged hashes.
+    pub fn aggregate_funding_keys_xonly(
+        pk_a: &CompressedPubkey,
+        pk_b: &CompressedPubkey,
+    ) -> Result<[u8; 32], &'static str> {
+        use secp256k1::{PublicKey, Scalar, Secp256k1};
+        use sha2::{Digest, Sha256};
+
+        const CURVE_ORDER: [u8; 32] = [
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE,
+            0xBA, 0xAE, 0xDC, 0xE6, 0xAF, 0x48, 0xA0, 0x3B,
+            0xBF, 0xD2, 0x5E, 0x8C, 0xD0, 0x36, 0x41, 0x41,
+        ];
+
+        fn tagged_hash(tag: &[u8], parts: &[&[u8]]) -> [u8; 32] {
+            let tag_hash = Sha256::digest(tag);
+            let mut hasher = Sha256::new();
+            hasher.update(tag_hash);
+            hasher.update(tag_hash);
+            for part in parts {
+                hasher.update(part);
+            }
+            hasher.finalize().into()
+        }
+
+        fn reduce_mod_n(bytes: &[u8; 32]) -> [u8; 32] {
+            let mut out = *bytes;
+            if out >= CURVE_ORDER {
+                let mut borrow = 0i16;
+                for i in (0..32).rev() {
+                    let diff = out[i] as i16 - CURVE_ORDER[i] as i16 - borrow;
+                    if diff < 0 {
+                        out[i] = (diff + 256) as u8;
+                        borrow = 1;
+                    } else {
+                        out[i] = diff as u8;
+                        borrow = 0;
+                    }
+                }
+            }
+            out
+        }
+
+        let key_a =
+            PublicKey::from_slice(pk_a.as_bytes()).map_err(|_| "bad pubkey")?;
+        let key_b =
+            PublicKey::from_slice(pk_b.as_bytes()).map_err(|_| "bad pubkey")?;
+
+        // Sort ascending (mirrors Fiber's order_things_for_musig2)
+        let (pk1, pk2) = if pk_a.as_bytes() <= pk_b.as_bytes() {
+            (key_a, key_b)
+        } else {
+            (key_b, key_a)
+        };
+
+        let pk1_bytes = pk1.serialize();
+        let pk2_bytes = pk2.serialize();
+
+        // L = tagged_hash("KeyAgg list", pk1 || pk2)
+        let l = tagged_hash(b"KeyAgg list", &[&pk1_bytes, &pk2_bytes]);
+
+        // a1 = int(tagged_hash("KeyAgg coefficient", L || pk1)) mod n
+        let a1_hash = tagged_hash(b"KeyAgg coefficient", &[&l, &pk1_bytes]);
+        let a1 = Scalar::from_be_bytes(reduce_mod_n(&a1_hash))
+            .map_err(|_| "bad scalar")?;
+
+        let secp = Secp256k1::new();
+        // effective1 = a1 * P1;  MuSig2*: coefficient 1 for P2
+        let effective1 = pk1
+            .mul_tweak(&secp, &a1)
+            .map_err(|_| "tweak")?;
+        let agg = PublicKey::combine_keys(&[&effective1, &pk2])
+            .map_err(|_| "combine")?;
+
+        Ok(agg.x_only_public_key().0.serialize())
     }
 
     /// Seed the Fiber channel CellDep referenced by a match with the MuSig2 funding lock args.
@@ -698,8 +780,8 @@ fn funding_lock_args_match_parsed_match_args() {
     );
     let parsed = MatchArgs::from_slice(&match_args.to_bytes()).expect("parse match args");
     let lock = faker::funding_lock_args(&parsed.order_args.fiber_pubkey, &parsed.fiber_pubkey);
-    use opticrum_protocol::keyagg;
-    let xonly = keyagg::aggregate_funding_keys_xonly(
+    // Verify the lock args match direct key aggregation (using inline test helper)
+    let xonly = faker::aggregate_funding_keys_xonly(
         &parsed.order_args.fiber_pubkey,
         &parsed.fiber_pubkey,
     )

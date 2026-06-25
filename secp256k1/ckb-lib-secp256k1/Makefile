@@ -28,7 +28,7 @@ all-via-docker: ${PROTOCOL_HEADER}
 build/libckb-lib-secp256k1.a: build/secp256k1_blake2b.o
 	$(AR) rcs $@ $^
 
-build/secp256k1_blake2b.o: secp256k1_blake2b.c ${PROTOCOL_HEADER} ckb-production-scripts/c/secp256k1_lock.h build/secp256k1_data_info.h $(SECP256K1_SRC)
+build/secp256k1_blake2b.o: secp256k1_blake2b.c ${PROTOCOL_HEADER} ckb-production-scripts/c/secp256k1_lock.h ckb-production-scripts/c/musig2_keyagg.h build/secp256k1_data_info.h $(SECP256K1_SRC)
 	$(CC) $(CFLAGS) ${SCRIPT_CFLAGS} -I ${CKB_SCRIPT_SECP256K1} -I ${CKB_SCRIPT_SECP256K1}/src -D __SHARED_LIBRARY__ -c -o $@ $<
 
 build/secp256k1_data_info.h: build/dump_secp256k1_data
@@ -61,7 +61,7 @@ build-x86/SECP256K1_SRC:
 		CC=$(CC2) LD=$(LD2) ./configure --with-bignum=no --enable-ecmult-static-precomputation --enable-endomorphism --enable-module-recovery && \
 		make src/ecmult_static_pre_context.h src/ecmult_static_context.h
 
-build-x86/secp256k1_blake2b.o: secp256k1_blake2b.c ${PROTOCOL_HEADER} ckb-production-scripts/c/secp256k1_lock.h build-x86/secp256k1_data_info.h build-x86/SECP256K1_SRC
+build-x86/secp256k1_blake2b.o: secp256k1_blake2b.c ${PROTOCOL_HEADER} ckb-production-scripts/c/secp256k1_lock.h ckb-production-scripts/c/musig2_keyagg.h build-x86/secp256k1_data_info.h build-x86/SECP256K1_SRC
 	$(CC2) $(CFLAGS2) ${SCRIPT_CFLAGS} -I ${CKB_SCRIPT_SECP256K1} -I ${CKB_SCRIPT_SECP256K1}/src -D __SHARED_LIBRARY__ -c -o $@ $<
 
 build-x86/secp256k1_data_info.h: build-x86/dump_secp256k1_data

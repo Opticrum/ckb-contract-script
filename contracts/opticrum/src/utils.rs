@@ -21,7 +21,7 @@ use crate::{
     error::OpticrumError, FIBER_FUNDING_TYPE_ID_MAINNET, FIBER_FUNDING_TYPE_ID_MOCK,
     FIBER_FUNDING_TYPE_ID_TESTNET,
 };
-use opticrum_protocol::keyagg;
+// Key aggregation now uses C FFI (secp256k1 crate) instead of Rust keyagg module
 
 // Re-export all protocol types from the canonical crate
 pub use opticrum_protocol::*;
@@ -116,7 +116,10 @@ pub fn verify_channel_funding_pubkey(
         return false;
     };
     let channel_args = lock.args().raw_data().to_vec();
-    let Ok(xonly) = keyagg::aggregate_funding_keys_xonly(buyer_pk, seller_pk) else {
+    let Ok(xonly) = secp256k1::compute_musig2_key_aggregation_xonly(
+        buyer_pk.as_bytes(),
+        seller_pk.as_bytes(),
+    ) else {
         return false;
     };
     let hash = ckb_hash::blake2b_256(xonly);

@@ -2,10 +2,7 @@ use std::str::FromStr;
 
 use ckb_cinnabar::calculator::{
     address::Address,
-    instruction::{
-        predefined::{balance_and_sign, balance_and_sign_with_ckb_cli},
-        DefaultInstruction,
-    },
+    instruction::{predefined::balance_and_sign, DefaultInstruction},
     operation::basic::AddSecp256k1SighashCellDep,
     re_exports::{
         ckb_sdk::constants::ONE_CKB,

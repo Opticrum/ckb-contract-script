@@ -2,6 +2,7 @@
 #include "blockchain.h"
 #include "secp256k1_helper.h"
 #include "secp256k1_lock.h"
+#include "musig2_keyagg.h"
 
 /* 32 KB */
 #define ONE_BATCH_SIZE 32768

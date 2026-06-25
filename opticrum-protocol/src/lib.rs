@@ -15,11 +15,6 @@
 
 use ckb_cinnabar_verifier::re_exports::ckb_std::ckb_types::{packed, prelude::Entity};
 
-/// BIP-327 MuSig2* key aggregation for the 2-of-2 funding key.
-/// Opt-in via the `musig2` feature so the on-chain contract build stays lean.
-#[cfg(feature = "musig2")]
-pub mod keyagg;
-
 pub const FIBER_PUBKEY_LEN: usize = 33; // 1-byte prefix + 32-byte x-coordinate
 pub const LOCK_HASH_LEN: usize = 32;
 
