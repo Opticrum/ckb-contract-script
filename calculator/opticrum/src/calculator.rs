@@ -10,7 +10,8 @@ use ckb_cinnabar_calculator::{
     operation::{
         basic::{
             AddCellDep, AddHeaderDepByBlockNumber, AddInputCellByAddress, AddInputCellByOutPoint,
-            AddOutputCell, AddOutputCellByInputIndex, CapacityAdjustment,
+            AddOutputCell, AddOutputCellByInputIndex, AddSecp256k1SighashCellDep,
+            CapacityAdjustment,
         },
         udt::AddXudtCelldep,
         Operation,
@@ -237,6 +238,8 @@ pub fn match_order<T: RPC>(
             dep_type: DepType::Code,
             with_data: true,
         }),
+        // For including Secp256k1 pre-context table
+        Box::new(AddSecp256k1SighashCellDep {}),
         // Consume the Order Cell
         Box::new(AddInputCellByOutPoint {
             tx_hash: order_info.order_outpoint.tx_hash.into(),
@@ -329,6 +332,8 @@ pub fn extract_rent<T: RPC>(
             dep_type: DepType::Code,
             with_data: true,
         }),
+        // For including Secp256k1 pre-context table
+        Box::new(AddSecp256k1SighashCellDep {}),
         Box::new(AddHeaderDepByBlockNumber {
             block_number: tip_block,
         }),

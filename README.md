@@ -1,313 +1,163 @@
 # Opticrum
 
-A decentralized liquidity marketplace for the [Fiber Network](https://github.com/nervosnetwork/fiber) on [CKB](https://github.com/nervosnetwork/ckb).
+A decentralized liquidity marketplace for the [Fiber Network](https://github.com/nervosnetwork/fiber) on [CKB](https://github.com/nervosnetwork/ckb). Fully decentralized version of [Amboss](https://amboss.tech/).
 
-Opticrum is the fully decentralized version of [Amboss](https://amboss.tech/) — a liquidity marketplace where:
+Built with [ckb-cinnabar](https://github.com/ashuralyk/ckb-cinnabar).
 
-- **Buyers** create on-chain Order Cells offering rent for inbound channel liquidity
-- **Sellers** match orders by referencing pre-created Fiber channels, earning rent linearly over time
+## How It Works
 
-Built with the [ckb-cinnabar](https://github.com/ashuralyk/ckb-cinnabar) framework.
+Opticrum connects two parties through on-chain escrow cells:
 
-## Architecture
+- **Buyers** lock CKB (or xUDT) into an Order Cell, offering rent for inbound Fiber channel liquidity.
+- **Sellers** already have a pre-created 2-of-2 Fiber channel. They match an order by referencing their channel and locking the rent into a Match Cell.
+- **Sellers** withdraw rent linearly over the escrow period. If the rent pool is exhausted, the match is destroyed.
 
-```
-Order Cell (buyer creates, 65-byte lock args + 32-byte data)
-    ├── Cancel  → buyer reclaims (Burn pattern)
-    └── Match   → seller matches with pre-created channel, produces Match Cell
-                  (Transfer pattern)
-                      ├── Extract Rent → seller periodically withdraws linear rent
-                      │                  (Transfer pattern)
-                      └── Destroy      → exhausted, seller or buyer sweeps remaining
-                                         (Burn pattern)
-```
+The entire lifecycle is enforced by a RISC-V contract running inside the CKB-VM — no trusted third party, no oracle, no off-chain server.
 
-Two Cell states discriminated by lock script `args` length:
-
-| State | Args Length | Contents |
-|-------|------------|----------|
-| **Order** | 65 bytes | `fiber_pubkey` (33) + `buyer_lock_hash` (32) |
-| **Match** | 166 bytes | Order args (65) + `channel_outpoint` (36) + `seller_lock_hash` (32) + `fiber_pubkey` (33, seller) |
-
-### Cell Data Layout
-
-**Order Cell data** (32 bytes):
-
-| Field | Offset | Size | Type | Description |
-|-------|--------|------|------|-------------|
-| `xudt_amount` | 0 | 16 | u128 LE | xUDT token amount (0 for CKB orders) |
-| `channel_capacity` | 16 | 8 | u64 LE | Minimum channel capacity requested |
-| `escrow_blocks` | 24 | 8 | u64 LE | Duration of the escrow period |
-
-**Match Cell data** (40 bytes):
-
-| Field | Offset | Size | Type | Description |
-|-------|--------|------|------|-------------|
-| `xudt_amount` | 0 | 16 | u128 LE | Remaining xUDT in escrow |
-| `rent_per_block` | 16 | 8 | f64 LE | Pre-computed linear rent rate |
-| `escrow_blocks` | 24 | 8 | u64 LE | Escrow duration (for expiry checks) |
-| `last_extraction_block` | 32 | 8 | u64 LE | Block number of last extraction |
-
-### Key Design Decisions
-
-**`channel_capacity` — verify then discard.** Stored in Order cell data so the match
-verifier can load the real channel cell from CellDeps and check that the seller's
-channel matches the capacity the buyer requested. Once verified, `channel_capacity`
-is not carried into the Match cell — it has served its purpose.
-
-**`escrow_blocks` — stored in Match data for expiry.** The escrow duration is carried
-into the Match cell so the destroy verifier can compute expiry without loading the
-original Order cell from a header proof.
-
-**Linear rent: `rent_per_block`.** At match time the total rent is converted into a
-pre-computed linear rate: `rent_per_block = total_rent / escrow_blocks`. This reduces
-on-chain extraction verification to a single multiplication: `rent_per_block × elapsed`.
-The `rent_per_block` is set once at match time and never changes.
-
-**Channel OutPoint instead of Lock Hash.** Match args store a `channel_outpoint`
-(36 bytes: tx_hash[32] + index[4] u32 LE) rather than a raw lock hash (32 bytes).
-The verifier looks up the channel cell by outpoint to confirm both its existence and
-its capacity — stronger than just comparing a hash. Cell-dep outpoints are read
-from the transaction via `load_transaction()` (CKB's `load_input_out_point` only
-works for inputs, not cell deps).
-
-**MuSig2 channel funding verification.** Fiber channels are funded by a 2-of-2
-MuSig2 key. The on-chain funding cell stores `blake160(x_only_aggregated_pubkey)`
-(20 bytes) in its lock args. At match time the contract recomputes the aggregated
-x-only key from the buyer pubkey (`order_args.fiber_pubkey`) and the seller pubkey
-(`match_args.fiber_pubkey`, declared in Match args) and checks it against the
-channel CellDep lock args. Aggregation is implemented in `opticrum-protocol/src/keyagg.rs`
-(BIP-327 MuSig2*, matching Fiber's deterministic key ordering).
-
-## Project Structure
+### Lifecycle
 
 ```
-opticrum/
-├── contracts/opticrum/       # On-chain RISC-V verification (no_std)
-│   ├── src/main.rs           # Entry: cinnabar_main! macro — Context + verifiers
-│   ├── src/verifiers/        # Cinnabar verification tree
-│   │   ├── root.rs           # Root: inspects args length → routes to branch
-│   │   ├── order_cancel.rs   # Buyer reclaims unmatched order
-│   │   ├── order_match.rs    # Seller matches order with channel
-│   │   ├── match_extract.rs  # Seller withdraws linear rent
-│   │   └── match_destroy.rs  # Exhausted match swept by seller or buyer
-│   ├── src/utils.rs          # Channel lookup (load_transaction), MuSig2 lock verification
-│   └── src/error.rs          # OpticrumError enum via define_errors! macro
-├── opticrum-protocol/        # Shared canonical data layouts (no_std + std)
-│   ├── src/lib.rs            # OrderArgs, OrderData, MatchArgs, MatchData,
-│   │                         #   OutPoint, CompressedPubkey, length constants
-│   └── src/keyagg.rs         # BIP-327 MuSig2* 2-of-2 funding key aggregation
-│                             #   (optional `musig2` feature; enabled for contract)
-├── calculator/opticrum/      # Off-chain transaction assembly
-│   ├── src/lib.rs            # Module declarations, re-exports
-│   ├── src/calculator.rs     # create_order, cancel_order, match_order,
-│   │                         #   extract_rent, destroy_match
-│   ├── src/types.rs          # Xudt, AnnualYield, OrderInfo, MatchInfo
-│   ├── src/operation.rs      # opticrum_lock(), AddOpticrumContractCelldep
-│   ├── src/reader.rs         # scan_orders, scan_matches, get_order/matched_info
-│   └── src/config.rs         # Contract name, type_id, constants
-├── src/main.rs               # CLI runner: deploy/migrate/consume
-├── tests/                    # Integration tests (CKB simulator; MuSig2 channel verification)
-├── scripts/                  # find_clang, reproducible_build_docker
-└── Makefile                  # Top-level: build, test, check, clippy, fmt
+                    ┌─ Cancel → buyer reclaims
+Order Cell ─────────┤
+                    └─ Match  → Match Cell ─┬─ Extract → seller withdraws rent
+                                            └─ Destroy → expired, sweep remainder
 ```
 
-### Crate Dependency Graph
+### Cell State Discrimination
+
+The contract identifies cell type purely by lock script `args` length:
+
+| State | Args | Identifies |
+|-------|------|-----------|
+| Order | 65 bytes | `fiber_pubkey` (33) + `buyer_lock_hash` (32) |
+| Match | 166 bytes | Order args (65) + `channel_outpoint` (36) + `seller_lock_hash` (32) + seller `fiber_pubkey` (33) |
+
+Both states carry 32–40 bytes of cell data encoding the economic parameters (amounts, rent rate, escrow duration).
+
+## Economic Model
+
+### Order Creation
+
+The buyer specifies three parameters in the Order cell data:
+
+- **xUDT amount** — tokens to pay as rent (0 for CKB-denominated orders)
+- **Channel capacity** — minimum capacity the seller's channel must have
+- **Escrow blocks** — how long the rent vests
+
+The buyer also pre-funds the order with the total rent amount. An `AnnualYield` percentage converts the escrow duration into a rent capacity that the buyer must provide upfront.
+
+### Linear Rent
+
+Rent vests linearly from the moment of matching. The key insight: instead of storing a "remaining at last extraction" numerator and computing a proportional share each time, Opticrum pre-computes a **rent per block** at match time:
 
 ```
-opticrum-protocol (canonical byte layouts, no_std; optional musig2 key aggregation)
-    ↑                   ↑
-contracts/opticrum    calculator/opticrum
-(no_std, RISC-V)      (std, off-chain)
-    ↑                   ↑
-opticrum-runner (src/main.rs, CLI via ckb-cinnabar::dispatch)
+rent_per_block = total_rent / escrow_blocks
 ```
 
-## Cinnabar Verification Tree
-
-The contract uses `cinnabar_main!` with a `Context` struct carrying `old_state` and
-optional `new_state`. The Root verifier inspects lock script args length and
-ScriptPattern to route to the correct branch:
+Extraction then becomes a single multiplication:
 
 ```
-Root (always runs first)
+extractable = rent_per_block × (tip_block - last_extraction_block)
+```
+
+When `accumulated_rent ≥ remaining_capacity`, the match is **exhausted** — all remaining funds go to the seller and the Match cell is destroyed.
+
+This design eliminates proportional arithmetic from on-chain verification, replacing it with one `f64 × u64` multiply.
+
+## On-Chain Verification
+
+### create_order / cancel_order
+
+Order creation is unchecked on-chain (the lock is passive on `ScriptPattern::Create`). Cancellation checks that the consuming input is signed by `buyer_lock_hash` from the Order args — only the buyer can cancel.
+
+### match_order
+
+When a seller matches, the contract verifies:
+
+1. **Channel exists** — a CellDep matches `channel_outpoint` and has a Fiber funding type ID. Its capacity (and xUDT amount, for token orders) satisfies the order's requirements.
+
+2. **MuSig2 key binds both parties** — Fiber channels are funded by a 2-of-2 MuSig2 aggregated key. The channel's lock args store `blake160(x_only_aggregated_key)`. At match time the contract recomputes the x-only aggregated key from the buyer's pubkey (in Order args) and the seller's pubkey (in Match args), hashes it, and compares against the channel lock. This proves the referenced channel was created for exactly these two parties.
+
+3. **Seller authorizes** — the seller's lock hash appears in transaction inputs.
+
+4. **State integrity** — Match cell data is correctly initialized, capacity transfers intact, and xUDT amount is preserved.
+
+### extract_rent
+
+The seller periodically withdraws vested rent:
+
+1. Channel cell still exists in CellDeps (existence only — capacity was verified at match time).
+2. Seller authorizes the transaction.
+3. Extraction amount matches `rent_per_block × (tip_block - last_extraction_block)`.
+4. Match cell data is updated (only `last_extraction_block` advances).
+5. Output cell remains viable (capacity ≥ occupied).
+6. On first extraction, a HeaderDep at the match creation block is required to prove the match's age.
+
+If the accumulated rent exhausts the remaining capacity, extraction delegates to destroy internally.
+
+### destroy_match
+
+After expiry or exhaustion, anyone can sweep the remainder. The verifier checks that either the buyer or seller authorizes, and that the match is genuinely exhausted (accumulated rent ≥ remaining capacity).
+
+## MuSig2 Key Aggregation
+
+Fiber creates every channel with a 2-of-2 MuSig2 multisig. The individual party keys are never stored on-chain — only `blake160(x_only_aggregated_pubkey)` appears in the channel lock args (and the full x-only key in the witness).
+
+To verify a channel belongs to a specific buyer-seller pair, Opticrum recomputes the aggregated key from the two compressed pubkeys using BIP-327 MuSig2\*:
+
+1. Sort the two 33-byte compressed pubkeys ascending (Fiber's deterministic ordering).
+2. Compute `L = tagged_hash("KeyAgg list", pk1 || pk2)`.
+3. Compute coefficient `a1 = int(tagged_hash("KeyAgg coefficient", L || pk1)) mod n`.
+4. Aggregate: `Q = a1·P1 + P2` (second distinct key gets coefficient 1).
+5. Extract the 32-byte x-coordinate, hash with blake2b-256, and compare the first 20 bytes against the channel lock args.
+
+The algorithm is implemented in **C** using Bitcoin Core's libsecp256k1 and compiled into the RISC-V binary. The 1 MB secp256k1 pre-context table (needed for efficient EC multiplication) is loaded from a shared CKB CellDep at runtime rather than embedded in the contract binary — keeping the on-chain footprint minimal.
+
+## CKB-VM Integration
+
+Opticrum uses ckb-cinnabar's verification tree pattern. The `Root` verifier inspects `args_len` and `ScriptPattern` (how the cell is consumed) to route to the correct branch:
+
+```
+Root
 ├── args_len == 65 (Order)
-│   ├── Burn     → "order_cancel"
-│   └── Transfer → "order_match"
+│   ├── Burn     → order_cancel   (consumed, no matching output)
+│   └── Transfer → order_match    (consumed, Match output produced)
 └── args_len == 166 (Match)
-    ├── Transfer → "match_extract"
-    └── Burn     → "match_destroy"
+    ├── Transfer → match_extract  (consumed, updated Match output produced)
+    └── Burn     → match_destroy  (consumed, no matching output)
 ```
 
-**ScriptPattern** is determined by how the Cell is consumed in the transaction:
-- **Burn**: Cell consumed as input, no matching Opticrum output (cancel / destroy)
-- **Transfer**: Cell consumed as input, matching Opticrum output produced (match / extract)
-
-## Operations
-
-### 1. Create Order
-
-Buyer creates an Order Cell with Opticrum lock. The buyer's personal lock signs
-the transaction. The lock does NOT execute on creation — verification only runs
-when the cell is consumed.
-
-```
-CellDeps:  [Opticrum contract]
-Inputs:    [Buyer's cell]
-Outputs:   [Order Cell]
-```
-
-The calculator computes `rent_capacity` from `AnnualYield` × Order Data, or
-accepts `xudt_amount` for token-denominated orders.
-
-### 2. Cancel Order
-
-Buyer reclaims an unmatched Order Cell. Verifier checks that the buyer's lock
-hash matches `buyer_lock_hash` in the Order args.
-
-```
-CellDeps:  [Opticrum contract]
-Inputs:    [Order Cell (Burn), Buyer's cell]
-```
-
-### 3. Match Order
-
-Seller matches an Order by referencing a pre-created Fiber channel. The channel
-cell is added as a CellDep (not consumed). The verifier checks:
-1. Channel Cell exists in CellDeps with matching OutPoint, Fiber funding type ID, and sufficient capacity (and/or xUDT amount for token orders)
-2. Channel lock args match MuSig2 aggregation of buyer + seller fiber pubkeys (`blake160(x_only_key)`)
-3. Match args' first 65 bytes match Order args
-4. Match data initialized (rent_per_block > 0, escrow_blocks > 0, last_extraction_block == 0)
-5. Match capacity equals Order capacity (rent transferred intact)
-6. xUDT amount unchanged from Order to Match
-7. Seller authorizes the transaction
-
-```
-CellDeps:  [Opticrum contract, Channel Cell]
-Inputs:    [Order Cell (Transfer), Seller's cell]
-Outputs:   [Match Cell, Seller change]
-```
-
-### 4. Extract Rent
-
-Seller withdraws linearly-vested rent from a Match Cell. The verifier checks:
-1. Channel cell still exists in CellDeps (existence only)
-2. Seller authorizes the transaction
-3. Match is not already exhausted
-4. Extraction amount equals `rent_per_block × (tip_block - last_extraction_block)`
-5. Match data fields updated correctly (only `last_extraction_block` changes to `tip_block`)
-6. Output cell remains viable (capacity >= occupied)
-
-```
-CellDeps:       [Opticrum contract, Channel Cell]
-HeaderDeps:     [tip_header] ( + creation_header on first extraction)
-Inputs:         [Match Cell (Transfer), Seller's cell]
-Outputs:        [Updated Match Cell, Seller cell + rent]
-```
-
-If the accumulated rent exceeds remaining capacity, the match is **exhausted** —
-the extract function delegates to destroy internally.
-
-### 5. Destroy Match
-
-After the match is exhausted (accumulated linear rent >= remaining capacity),
-the seller or buyer can destroy the Match Cell and sweep remaining funds.
-
-```
-CellDeps:       [Opticrum contract]
-HeaderDeps:     [tip_header] ( + creation_header if never extracted)
-Inputs:         [Match Cell (Burn), Claimant's cell]
-```
-
-## Rent Calculation
-
-**Linear formula:** `extractable = rent_per_block × (tip_block - last_extraction_block)`
-
-`rent_per_block` is pre-computed off-chain at match time as `total_rent / escrow_blocks`
-(stored as f64). This eliminates proportional arithmetic, simplifying on-chain
-verification to a single multiplication. However, `rent_per_block` is intentionally
-not compared during extraction updates — f64 equality is unreliable across
-platforms (hardware FPU vs RISC-V soft-float). It is an invariant set at match
-time and never changes.
-
-When `accumulated_rent >= remaining_capacity`, the match is **exhausted** — the
-full remaining capacity (+ xUDT) is released and no updated Match Cell is produced.
-
-## Type Reference
-
-| Type | Fields | Size |
-|------|--------|------|
-| `OrderArgs` | `fiber_pubkey` (33), `buyer_lock_hash` (32) | 65 bytes |
-| `OrderData` | `xudt_amount` (u128), `channel_capacity` (u64), `escrow_blocks` (u64) | 32 bytes |
-| `MatchArgs` | `order_args` (65), `channel_outpoint` (36), `seller_lock_hash` (32), `fiber_pubkey` (33, seller) | 166 bytes |
-| `MatchData` | `xudt_amount` (u128), `rent_per_block` (f64), `escrow_blocks` (u64), `last_extraction_block` (u64) | 40 bytes |
-| `OutPoint` | `tx_hash` (32), `index` (u32) | 36 bytes |
-| `CompressedPubkey` | 33-byte compressed secp256k1 public key | 33 bytes |
-| `FIBER_FUNDING_LOCK_ARGS_LEN` | blake160(x-only aggregated MuSig2 pubkey) | 20 bytes |
-| `Xudt` | `amount` (u128), `type_script` (Script) | — |
-| `AnnualYield` | `percentage` (u8) | — |
-| `OrderInfo` | `order_args`, `order_data`, `xudt?`, `ckb_capacity`, `order_outpoint` | — |
-| `MatchInfo` | `match_args`, `match_data`, `xudt?`, `ckb_capacity`, `match_outpoint`, `match_current_block` | — |
+All verifiers run inside the CKB-VM (RISC-V, `no_std`). They access on-chain state exclusively through CKB syscalls: loading cells, headers, witnesses, and transaction data.
 
 ## Build & Test
 
 ```bash
-make build          # Compile RISC-V contract binary → build/release/opticrum
-make test           # Run integration tests (CKB transaction simulator)
+make build          # Compile RISC-V contract → build/release/opticrum
+make test           # Integration tests (CKB transaction simulator)
 make check          # cargo check
 make clippy         # cargo clippy
 make fmt            # cargo fmt
-
-# Single contract
-make build CONTRACT=opticrum
-
-# Specific test with output
-make test CARGO_ARGS="-- --nocapture"
-
-# Prepare RISC-V target
-make prepare        # rustup target add riscv64imac-unknown-none-elf
 ```
 
-## Key Dependencies
+**Dependencies**: [ckb-cinnabar](https://github.com/ashuralyk/ckb-cinnabar) (sibling repo), Rust nightly for `riscv64imac-unknown-none-elf`, and a RISC-V GCC toolchain for the C secp256k1 library.
 
-- **[ckb-cinnabar](https://github.com/ashuralyk/ckb-cinnabar)** — On-chain script framework (verification tree, dispatch, ScriptPattern)
-- **ckb-cinnabar-verifier** — `no_std` RISC-V verification primitives (used by contracts/ and opticrum-protocol/)
-- **ckb-cinnabar-calculator** — Off-chain transaction building (used by calculator/)
-- All referenced via `path = "../ckb-cinnabar/..."` (sibling repo)
+## Error Reference
 
-## Error Codes
+| Error | Trigger |
+|-------|---------|
+| `ChannelCellNotInDep` | Channel CellDep not found or wrong funding type |
+| `ChannelFundingPubkeyMismatch` | Channel lock args ≠ blake160(aggregated buyer+seller key) |
+| `ChannelCapacityMismatch` | Order → Match capacity changed |
+| `BadExtractionAmount` | Extracted amount ≠ rent_per_block × elapsed |
+| `MatchAlreadyExhausted` | Extract called on exhausted match |
+| `MatchNotExhausted` | Destroy called before match is exhausted |
+| `BuyerAuthMissing` / `SellerAuthMissing` | Required signer not found in inputs |
+| `BadArgsLength` | Lock args not 65 or 166 bytes |
 
-| Error | Description |
-|-------|-------------|
-| `BadOrderCancel` | Order cancellation validation failed |
-| `BadOrderMatch` | Order matching validation failed |
-| `ChannelCellNotInDep` | Required Channel Cell not found in CellDeps |
-| `ChannelCapacityMismatch` | Order → Match capacity mismatch |
-| `ChannelFundingPubkeyMismatch` | Channel lock args do not match MuSig2-aggregated funding key |
-| `OrderDataNotSet` | Order data missing or malformed |
-| `BadXudtAmount` | xUDT amount mismatch between Order and Match |
-| `BadExtractionAmount` | Rent extraction amount differs from computed value |
-| `MatchDataNotSet` | Match data incorrectly initialized |
-| `HeaderNotSet` | Required header dependency missing |
-| `BadMatchDataUpdate` | Match data fields incorrectly updated |
-| `MatchAlreadyExhausted` | Attempt to extract from already-exhausted match |
-| `MatchNotExhausted` | Attempt to destroy before match is exhausted |
-| `BadArgsLength` | Lock args wrong length (not 65 or 166) |
-| `BuyerAuthMissing` | Buyer not found in transaction inputs |
-| `SellerAuthMissing` | Seller not found in transaction inputs |
-| `AuthorizationMissing` | Neither seller nor buyer found in inputs (destroy) |
-| `UnexpectedBranch` | Branch type mismatch (Order vs Match) |
-| `UnknownState` | Unrecognized cell state or pattern |
+## Encoding Conventions
 
-## Code Conventions
-
-- `no_std` in contracts and protocol crate (RISC-V target: `riscv64imac-unknown-none-elf`)
-- Error handling via `define_errors!` macro (`CUSTOM_ERROR_START + offset`)
-- Verifiers implement `Verification<Context>` trait from ckb-cinnabar
-- Args parsing: `from_slice()` constructors validating lengths, returning `Result<T, &'static str>`
-- Protocol types defined canonically in `opticrum-protocol/` and re-exported by both contracts and calculator
-- Capacity values in shannons (1 CKB = 10^8 shannons)
-- Little-endian encoding for all integer fields in args/data
-- `ABOUT_ONE_DAY_BLOCKS = 10_000` (approximate, used in AnnualYield calculations)
-- `CKB_DECIMAL = 100_000_000`
-- RISC-V extensions: `+zba,+zbb,+zbc,+zbs`
+- All integers: little-endian
+- Capacity values: shannons (1 CKB = 10⁸ shannons)
+- `f64`: IEEE 754 little-endian (RISC-V soft-float compatible)
+- `rent_per_block` is intentionally not compared during extraction updates — f64 equality is unreliable across hardware FPU vs RISC-V soft-float
+- `ABOUT_ONE_DAY_BLOCKS ≈ 10,000`

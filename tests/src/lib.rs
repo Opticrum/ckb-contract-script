@@ -1,2 +1,9 @@
-//! Opticrum integration test utilities.
-//! Actual tests live in `tests/opticrum_tests.rs`.
+//! Opticrum integration test utilities and test modules.
+
+pub mod faker;
+
+#[cfg(test)]
+mod unit;
+
+#[cfg(test)]
+mod integration;

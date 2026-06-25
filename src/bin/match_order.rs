@@ -2,8 +2,7 @@ use std::str::FromStr;
 
 use ckb_cinnabar::calculator::{
     address::Address,
-    instruction::{predefined::balance_and_sign, DefaultInstruction},
-    operation::basic::AddSecp256k1SighashCellDep,
+    instruction::predefined::balance_and_sign,
     re_exports::{
         ckb_sdk::constants::ONE_CKB,
         ckb_types::{h256, prelude::hex_string},
@@ -62,7 +61,6 @@ pub async fn main() -> eyre::Result<()> {
         seller_fiber_pubkey,
     );
 
-    let prepare = DefaultInstruction::new(vec![Box::new(AddSecp256k1SighashCellDep {})]);
     let match_tx = match_order::<RpcClient>(seller_address.clone(), order.clone(), match_args);
     let balance = balance_and_sign(
         &seller_address,
@@ -73,7 +71,7 @@ pub async fn main() -> eyre::Result<()> {
         1000,
     );
 
-    let (tx, _) = TransactionCalculator::new(vec![prepare, match_tx, balance])
+    let (tx, _) = TransactionCalculator::new(vec![match_tx, balance])
         .new_skeleton(&rpc)
         .await?;
 

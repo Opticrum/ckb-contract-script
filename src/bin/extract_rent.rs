@@ -2,16 +2,12 @@ use std::str::FromStr;
 
 use ckb_cinnabar::calculator::{
     address::Address,
-    instruction::{predefined::balance_and_sign_with_ckb_cli, DefaultInstruction},
-    operation::basic::AddSecp256k1SighashCellDep,
+    instruction::predefined::balance_and_sign_with_ckb_cli,
     re_exports::{ckb_sdk::constants::ONE_CKB, ckb_types::prelude::hex_string, eyre, tokio},
-    rpc::RpcClient,
+    rpc::{RpcClient, RPC},
     TransactionCalculator,
 };
-use opticrum_calculator::{
-    calculator::extract_rent,
-    reader::scan_matches,
-};
+use opticrum_calculator::{calculator::extract_rent, reader::scan_matches};
 
 #[tokio::main]
 pub async fn main() -> eyre::Result<()> {
@@ -21,9 +17,9 @@ pub async fn main() -> eyre::Result<()> {
     )
     .unwrap();
     let match_index: usize = 0; // pick which scanned match to extract from
-    let tip_block: u64 = 0; // TODO: fill current chain tip block number
 
     let rpc = RpcClient::new_testnet();
+    let tip_block: u64 = rpc.get_tip_block_number().await?.into();
 
     // Scan for matches, pick one by index
     let matches = scan_matches(&rpc).await?;
@@ -40,10 +36,7 @@ pub async fn main() -> eyre::Result<()> {
         "  remaining capacity: {} CKB",
         match_info.ckb_capacity as f64 / ONE_CKB as f64
     );
-    println!(
-        "  rent_per_block: {}",
-        match_info.match_data.rent_per_block
-    );
+    println!("  rent_per_block: {}", match_info.match_data.rent_per_block);
     println!(
         "  last_extraction_block: {}",
         match_info.match_data.last_extraction_block
@@ -53,16 +46,18 @@ pub async fn main() -> eyre::Result<()> {
         println!("  Match is EXHAUSTED — destroy_match will be used");
     }
 
-    let prepare = DefaultInstruction::new(vec![Box::new(AddSecp256k1SighashCellDep {})]);
     let extract = extract_rent::<RpcClient>(seller_address.clone(), match_info.clone(), tip_block);
     let balance = balance_and_sign_with_ckb_cli(&seller_address, 1000, None);
 
-    let (tx, _) = TransactionCalculator::new(vec![prepare, extract, balance])
+    let (tx, _) = TransactionCalculator::new(vec![extract, balance])
         .new_skeleton(&rpc)
         .await?;
 
     let tx_hash = tx.send_and_wait(&rpc, 0, None).await?;
-    println!("Rent extracted! Tx hash: {}", hex_string(tx_hash.as_bytes()));
+    println!(
+        "Rent extracted! Tx hash: {}",
+        hex_string(tx_hash.as_bytes())
+    );
 
     Ok(())
 }
