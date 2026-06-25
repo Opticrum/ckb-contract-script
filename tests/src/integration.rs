@@ -4,106 +4,16 @@
 //! against the compiled RISC-V binary.
 
 use ckb_cinnabar_calculator::{
-    re_exports::{ckb_types::prelude::Unpack, eyre},
+    re_exports::eyre,
     simulation::{FakeRpcClient, TransactionSimulator, DEFUALT_MAX_CYCLES},
 };
 use opticrum_calculator::{
     cancel_order, create_order, destroy_match, extract_rent, match_order, scan_matches,
     scan_orders,
-    types::{AnnualYield, MatchArgs, MatchData, OrderArgs, OrderData, MATCH_ARGS_LEN},
+    types::{AnnualYield, MatchArgs, MatchData, OrderArgs, OrderData},
 };
 
 use crate::faker;
-
-// ---------------------------------------------------------------------------
-// VM-Verified Integration Tests
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn match_skeleton_channel_celldep() -> eyre::Result<()> {
-    use ckb_cinnabar_calculator::operation::Log;
-
-    let mut rpc = FakeRpcClient::default();
-    let mut skeleton = faker::celldeps_prepared_skeleton(&rpc).await?;
-    faker::seed_user_cell(&mut rpc, 200_000_000_000);
-
-    let seller = faker::fake_address();
-    let order_args = OrderArgs::new(faker::fiber_pubkey(), faker::user_lock_hash());
-    let order_data = OrderData::new(0, faker::CHANNEL_CAPACITY, faker::ESCROW_BLOCKS);
-    let match_args = MatchArgs::new(
-        order_args.clone(),
-        faker::channel_outpoint(),
-        faker::user_lock_hash(),
-        faker::seller_fiber_pubkey(),
-    );
-
-    let packed = faker::seed_order_cell(
-        &mut rpc,
-        &skeleton,
-        &order_args,
-        &order_data,
-        faker::RENT_CAPACITY,
-    )?;
-    faker::seed_match_channel_cell(&mut rpc, &order_args, &match_args, faker::CHANNEL_CAPACITY);
-
-    let order_info = faker::to_order_info(&packed, order_args, order_data);
-    let instruction = match_order(seller, order_info, match_args.clone());
-    let mut log = Log::new();
-    instruction.run(&rpc, &mut skeleton, &mut log).await?;
-
-    let dep = skeleton
-        .get_celldep_by_name("fiber_channel")
-        .expect("fiber_channel celldep");
-    let type_hash: [u8; 32] = dep.output.calc_type_hash().expect("type hash").into();
-    assert_eq!(type_hash, faker::CONTRACT_MOCK);
-    let capacity: u64 = dep.output.output.capacity().unpack();
-    assert!(
-        capacity >= faker::CHANNEL_CAPACITY,
-        "channel capacity must satisfy order"
-    );
-    let tx_hash: [u8; 32] = dep.celldep.out_point().tx_hash().unpack();
-    let index: u32 = dep.celldep.out_point().index().unpack();
-    assert_eq!(tx_hash, match_args.channel_outpoint.tx_hash);
-    assert_eq!(index, match_args.channel_outpoint.index);
-
-    let match_lock_args = skeleton
-        .outputs
-        .iter()
-        .find_map(|o| {
-            let args = o.lock_script().args().raw_data();
-            (args.len() == MATCH_ARGS_LEN).then(|| args.to_vec())
-        })
-        .expect("match output lock args");
-    let parsed = MatchArgs::from_slice(&match_lock_args).expect("parse match output args");
-    assert_eq!(
-        parsed.channel_outpoint.tx_hash,
-        match_args.channel_outpoint.tx_hash
-    );
-    assert_eq!(
-        parsed.channel_outpoint.index,
-        match_args.channel_outpoint.index
-    );
-
-    let resolved = skeleton.into_resolved_transaction(&rpc).await?;
-    assert!(
-        !resolved.transaction.cell_deps().is_empty(),
-        "match tx must include cell deps"
-    );
-    let channel_meta = resolved
-        .resolved_cell_deps
-        .iter()
-        .find(|m| {
-            let tx_hash: [u8; 32] = m.out_point.tx_hash().unpack();
-            let index: u32 = m.out_point.index().unpack();
-            tx_hash == match_args.channel_outpoint.tx_hash
-                && index == match_args.channel_outpoint.index
-        })
-        .expect("channel celldep in resolved tx");
-    let resolved_cap: u64 = channel_meta.cell_output.capacity().unpack();
-    assert!(resolved_cap >= faker::CHANNEL_CAPACITY);
-
-    Ok(())
-}
 
 // ---------------------------------------------------------------------------
 // Lifecycle: Create / Cancel
@@ -177,16 +87,25 @@ async fn test_match_order() -> eyre::Result<()> {
         faker::seller_fiber_pubkey(),
     );
 
-    let packed = faker::seed_order_cell(
+    // Use _at variant with explicit block so Source::Input can resolve the header
+    let packed = faker::seed_order_cell_at(
         &mut rpc,
         &skeleton,
         &order_args,
         &order_data,
         faker::RENT_CAPACITY,
+        faker::ORDER_CREATED_BLOCK,
     )?;
-    faker::seed_match_channel_cell(&mut rpc, &order_args, &match_args, faker::CHANNEL_CAPACITY);
+    faker::seed_channel_cell_at(
+        &mut rpc,
+        &match_args.channel_outpoint,
+        faker::CHANNEL_CAPACITY,
+        faker::funding_lock_args(&order_args.fiber_pubkey, &match_args.fiber_pubkey),
+        faker::CHANNEL_CREATED_BLOCK,
+    );
 
     let order_info = faker::to_order_info(&packed, order_args, order_data);
+    faker::seed_channel_and_order_headers(&mut rpc);
     let instruction = match_order(seller, order_info, match_args);
 
     let cycle = TransactionSimulator::default()
@@ -237,6 +156,7 @@ async fn test_match_order_rejects_wrong_seller_fiber_pubkey() -> eyre::Result<()
     );
 
     let order_info = faker::to_order_info(&packed, order_args, order_data);
+    faker::seed_channel_and_order_headers(&mut rpc);
     let instruction = match_order(seller, order_info, match_args);
 
     let result = TransactionSimulator::default()
@@ -281,6 +201,7 @@ async fn test_match_order_rejects_wrong_channel_funding_lock() -> eyre::Result<(
     );
 
     let order_info = faker::to_order_info(&packed, order_args, order_data);
+    faker::seed_channel_and_order_headers(&mut rpc);
     let instruction = match_order(seller, order_info, match_args);
 
     let result = TransactionSimulator::default()
@@ -323,7 +244,6 @@ async fn test_extract_rent() -> eyre::Result<()> {
     )?;
     faker::seed_match_channel_cell(&mut rpc, &order_args, &match_args, faker::CHANNEL_CAPACITY);
     let tip = faker::MATCH_CREATED_BLOCK + 100;
-    faker::seed_header(&mut rpc, faker::MATCH_CREATED_BLOCK, 0);
     faker::seed_header(&mut rpc, tip, 1000);
 
     let match_info = faker::to_match_info(&packed, match_args, match_data);

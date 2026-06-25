@@ -7,6 +7,7 @@ define_errors!(OpticrumError, {
     ChannelCellNotInDep,
     ChannelCapacityMismatch,
     ChannelFundingPubkeyMismatch,
+    ChannelCreatedBeforeOrder,
     OrderDataNotSet,
     BadXudtAmount,
 

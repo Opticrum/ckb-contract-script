@@ -143,51 +143,61 @@ pub fn find_channel_in_celldeps(
     min_capacity: Option<u64>,
     min_xudt_amount: Option<u128>,
     xudt_type_script: Option<Option<&Script>>,
-) -> bool {
+) -> Option<usize> {
     let Ok(cell_deps) = load_transaction().map(|tx| tx.raw().cell_deps()) else {
-        return false;
+        return None;
     };
-    let Some((Ok(lock), Ok(type_), Ok(data), Ok(capacity))) =
+    let Some((i, Ok(lock), Ok(type_), Ok(data), Ok(capacity))) =
         cell_deps.into_iter().enumerate().find_map(|(i, dep)| {
             if channel_outpoint.matches(&dep.out_point()) {
                 let lock = load_cell_lock(i, Source::CellDep);
                 let type_ = load_cell_type(i, Source::CellDep);
                 let data = load_cell_data(i, Source::CellDep);
                 let capacity = load_cell_capacity(i, Source::CellDep);
-                Some((lock, type_, data, capacity))
+                Some((i, lock, type_, data, capacity))
             } else {
                 None
             }
         })
     else {
-        return false;
+        return None;
     };
     if !is_fiber_funding_contract(&lock.code_hash().unpack())
         || lock.hash_type() != ScriptHashType::Type.into()
     {
-        return false;
+        return None;
     }
     if let Some(xudt_type_script) = xudt_type_script {
         if type_.as_ref() != xudt_type_script {
-            return false;
+            return None;
         }
     }
     if let Some(amount) = min_xudt_amount {
         if data.len() < XUDT_AMOUNT_LEN {
-            return false;
+            return None;
         }
         let xudt_amount = u128::from_le_bytes(data[0..XUDT_AMOUNT_LEN].try_into().unwrap());
         if xudt_amount < amount {
-            return false;
+            return None;
         }
     }
     if let Some(cap) = min_capacity {
         debug!("min: {cap}, real: {capacity}");
         if capacity < cap {
-            return false;
+            return None;
         }
     }
-    true
+    Some(i)
+}
+
+/// Check if a channel cell exists in CellDeps.
+pub fn check_channel_existence(channel_outpoint: &OutPoint) -> bool {
+    let Ok(cell_deps) = load_transaction().map(|tx| tx.raw().cell_deps()) else {
+        return false;
+    };
+    cell_deps
+        .into_iter()
+        .any(|dep| channel_outpoint.matches(&dep.out_point()))
 }
 
 /// Parse xudt amount and type from cell data.

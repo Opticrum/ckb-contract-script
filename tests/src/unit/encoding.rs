@@ -1,8 +1,9 @@
-use crate::faker;
 use opticrum_calculator::types::{
     CompressedPubkey, MatchArgs, MatchData, OrderArgs, OrderData, MATCH_ARGS_LEN, MATCH_DATA_LEN,
     ORDER_ARGS_LEN, ORDER_DATA_LEN,
 };
+
+use crate::faker;
 
 #[test]
 fn test_args_encoding() {

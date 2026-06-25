@@ -1,5 +1,9 @@
 use ckb_cinnabar_verifier::{re_exports::ckb_std, Result, Verification};
-use ckb_std::{ckb_constants::Source, debug, high_level::load_cell_capacity};
+use ckb_std::{
+    ckb_constants::Source,
+    debug,
+    high_level::{load_cell_capacity, load_header},
+};
 
 use crate::{
     error::OpticrumError,
@@ -24,6 +28,8 @@ use crate::{
 ///    escrow_blocks > 0, last_extraction_block == 0)
 /// 5. Match Cell capacity == Order Cell capacity (rent transferred intact)
 /// 6. Seller authorizes the transaction (lock hash in inputs)
+/// 7. Channel was created after the Order
+///    (load_header(Source::Input) vs load_header(Source::CellDep))
 #[derive(Default)]
 pub struct OrderMatch;
 
@@ -40,7 +46,7 @@ impl Verification<Context> for OrderMatch {
         };
 
         // 1. Verify a CellDep exists with at least the required channel capacity.
-        let channel_obligated = find_channel_in_celldeps(
+        let Some(channel_index) = find_channel_in_celldeps(
             &match_args.channel_outpoint,
             if order_data.xudt_amount > 0 {
                 None
@@ -56,10 +62,9 @@ impl Verification<Context> for OrderMatch {
                 .xudt
                 .as_ref()
                 .map(|(_, type_script)| Some(type_script)),
-        );
-        if !channel_obligated {
+        ) else {
             return Err(OpticrumError::ChannelCellNotInDep.into());
-        }
+        };
 
         // 2. Verify channel funding pubkey matches MuSig2 aggregation
         if !verify_channel_funding_pubkey(
@@ -104,6 +109,23 @@ impl Verification<Context> for OrderMatch {
                 order_data.xudt_amount, match_data.xudt_amount
             );
             return Err(OpticrumError::BadXudtAmount.into());
+        }
+
+        // 7. Channel must have been created after the order.
+        //    GroupInput[0] = Order cell, CellDep[channel_index] = Channel cell.
+        debug!("channel_index: {}", channel_index);
+        let order_block =
+            load_header(0, Source::GroupInput).map_err(|_| OpticrumError::HeaderNotSet)?;
+        debug!("order_block: {}", order_block.raw().number());
+        let channel_block =
+            load_header(channel_index, Source::CellDep).map_err(|_| OpticrumError::HeaderNotSet)?;
+        debug!("channel_block: {}", channel_block.raw().number());
+        if channel_block.raw().number() <= order_block.raw().number() {
+            debug!(
+                "Channel created at {} not after order at {}",
+                channel_block, order_block
+            );
+            return Err(OpticrumError::ChannelCreatedBeforeOrder.into());
         }
 
         debug!("[{name}] Order matched successfully");

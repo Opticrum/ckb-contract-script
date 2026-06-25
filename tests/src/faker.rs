@@ -1,3 +1,6 @@
+use ckb_cinnabar_calculator::re_exports::ckb_types::packed::OutPoint as PackedOutPoint;
+use ckb_cinnabar_calculator::simulation::random_hash;
+use ckb_cinnabar_calculator::skeleton::TransactionSkeleton;
 use ckb_cinnabar_calculator::{
     address::{Address, AddressPayload},
     instruction::Instruction,
@@ -18,8 +21,6 @@ use ckb_cinnabar_calculator::{
     skeleton::CellOutputEx,
     TransactionCalculator,
 };
-use ckb_cinnabar_calculator::re_exports::ckb_types::packed::OutPoint as PackedOutPoint;
-use ckb_cinnabar_calculator::skeleton::TransactionSkeleton;
 use opticrum_calculator::types::{
     CompressedPubkey, MatchArgs, MatchData, MatchInfo, OrderArgs, OrderData, OrderInfo, OutPoint,
 };
@@ -30,6 +31,12 @@ pub const CHANNEL_CAPACITY: u64 = 100_000_000_000;
 pub const ESCROW_BLOCKS: u64 = 43200;
 pub const RENT_CAPACITY: u64 = 30_000_000_000;
 pub const MATCH_CREATED_BLOCK: u64 = 1000;
+
+/// Block number where Order cells are seeded (must be < CHANNEL_CREATED_BLOCK).
+pub const ORDER_CREATED_BLOCK: u64 = 10;
+/// Block number where Channel cells are seeded (must be > ORDER_CREATED_BLOCK
+/// to pass the temporal check).
+pub const CHANNEL_CREATED_BLOCK: u64 = 20;
 
 // --- Identity helpers ---
 
@@ -61,13 +68,18 @@ fn keypair_from(secret: [u8; 32]) -> CompressedPubkey {
 
 /// Must stay in sync with `FIBER_FUNDING_TYPE_ID_MOCK` in the contract.
 pub const CONTRACT_MOCK: [u8; 32] = [
-    0x77, 0xc9, 0x16, 0x3a, 0xdd, 0xbf, 0x87, 0xc8, 0x05, 0xbe, 0x3b, 0x6c, 0x85, 0x69, 0xb8,
-    0xe0, 0x15, 0xa4, 0xca, 0x0e, 0xf3, 0xc6, 0x89, 0x15, 0x02, 0x34, 0xf0, 0xc8, 0x02, 0xa7,
-    0x69, 0x00,
+    0x77, 0xc9, 0x16, 0x3a, 0xdd, 0xbf, 0x87, 0xc8, 0x05, 0xbe, 0x3b, 0x6c, 0x85, 0x69, 0xb8, 0xe0,
+    0x15, 0xa4, 0xca, 0x0e, 0xf3, 0xc6, 0x89, 0x15, 0x02, 0x34, 0xf0, 0xc8, 0x02, 0xa7, 0x69, 0x00,
 ];
 
 pub fn channel_outpoint() -> OutPoint {
-    OutPoint::new([0x04u8; 32], 0)
+    let out_point = fake_outpoint();
+    OutPoint::new(out_point.tx_hash().unpack(), out_point.index().unpack())
+}
+
+pub fn random_u64() -> u64 {
+    let hash = random_hash();
+    u64::from_le_bytes(hash[..8].try_into().unwrap())
 }
 
 // --- MuSig2 helpers ---
@@ -138,9 +150,7 @@ fn build_opticrum_lock(args: Vec<u8>, skeleton: &TransactionSkeleton) -> eyre::R
 // --- Skeleton preparation ---
 
 /// Build a reusable skeleton pre-loaded with all contract celldeps.
-pub async fn celldeps_prepared_skeleton(
-    rpc: &FakeRpcClient,
-) -> eyre::Result<TransactionSkeleton> {
+pub async fn celldeps_prepared_skeleton(rpc: &FakeRpcClient) -> eyre::Result<TransactionSkeleton> {
     let secp256k1_data_path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../secp256k1/ckb-lib-secp256k1/build/secp256k1_data"
@@ -174,7 +184,7 @@ pub fn seed_user_cell(rpc: &mut FakeRpcClient, capacity: u64) {
     let cell =
         CellOutputEx::new_from_scripts(lock, None, vec![], Some(Capacity::shannons(capacity)))
             .expect("build user cell");
-    let header = fake_header_view(1, 0, 0);
+    let header = fake_header_view(1, random_u64(), random_u64());
     rpc.insert_fake_cell(fake_outpoint(), cell, Some(header));
 }
 
@@ -205,12 +215,52 @@ pub fn seed_channel_cell(
         .tx_hash(H256(outpoint.tx_hash).pack())
         .index(outpoint.index.pack())
         .build();
-    let header = fake_header_view(1, 0, 0);
+    let header = fake_header_view(CHANNEL_CREATED_BLOCK, random_u64(), random_u64());
+    rpc.insert_fake_cell(packed, cell, Some(header));
+}
+
+/// Seed a channel cell at a custom block number (for temporal check testing).
+pub fn seed_channel_cell_at(
+    rpc: &mut FakeRpcClient,
+    outpoint: &OutPoint,
+    capacity: u64,
+    funding_lock_args: [u8; 20],
+    block_number: u64,
+) {
+    let channel_type = Script::new_builder()
+        .code_hash(H256([0xCCu8; 32]).pack())
+        .hash_type(ScriptHashType::Data1.into())
+        .args(Bytes::new().pack())
+        .build();
+    let lock = Script::new_builder()
+        .code_hash(H256(CONTRACT_MOCK).pack())
+        .hash_type(ScriptHashType::Type.into())
+        .args(Bytes::copy_from_slice(&funding_lock_args).pack())
+        .build();
+    let cell = CellOutputEx::new_from_scripts(
+        lock,
+        Some(channel_type),
+        vec![],
+        Some(Capacity::shannons(capacity)),
+    )
+    .expect("build channel cell");
+    let packed = PackedOutPoint::new_builder()
+        .tx_hash(H256(outpoint.tx_hash).pack())
+        .index(outpoint.index.pack())
+        .build();
+    let header = fake_header_view(block_number, random_u64(), random_u64());
     rpc.insert_fake_cell(packed, cell, Some(header));
 }
 
 pub fn seed_header(rpc: &mut FakeRpcClient, block_number: u64, timestamp: u64) {
-    rpc.insert_fake_header(fake_header_view(block_number, timestamp, 0));
+    rpc.insert_fake_header(fake_header_view(block_number, timestamp, random_u64()));
+}
+
+/// Seed headers for both the channel and order creation blocks so the
+/// match-order HeaderDeps resolve in the transaction simulator.
+pub fn seed_channel_and_order_headers(rpc: &mut FakeRpcClient) {
+    seed_header(rpc, CHANNEL_CREATED_BLOCK, 0);
+    seed_header(rpc, ORDER_CREATED_BLOCK, 0);
 }
 
 pub fn seed_order_cell(
@@ -228,7 +278,29 @@ pub fn seed_order_cell(
         Some(Capacity::shannons(capacity)),
     )?;
     let outpoint = fake_outpoint();
-    let header = fake_header_view(1, 0, 0);
+    let header = fake_header_view(ORDER_CREATED_BLOCK, random_u64(), random_u64());
+    rpc.insert_fake_cell(outpoint.clone(), cell, Some(header));
+    Ok(outpoint)
+}
+
+/// Seed an order cell at a custom block number (for temporal check testing).
+pub fn seed_order_cell_at(
+    rpc: &mut FakeRpcClient,
+    skeleton: &TransactionSkeleton,
+    order_args: &OrderArgs,
+    order_data: &OrderData,
+    capacity: u64,
+    block_number: u64,
+) -> eyre::Result<PackedOutPoint> {
+    let lock = build_opticrum_lock(order_args.to_bytes().to_vec(), skeleton)?;
+    let cell = CellOutputEx::new_from_scripts(
+        lock,
+        None,
+        order_data.to_bytes().to_vec(),
+        Some(Capacity::shannons(capacity)),
+    )?;
+    let outpoint = fake_outpoint();
+    let header = fake_header_view(block_number, random_u64(), random_u64());
     rpc.insert_fake_cell(outpoint.clone(), cell, Some(header));
     Ok(outpoint)
 }
@@ -249,7 +321,7 @@ pub fn seed_match_cell(
         Some(Capacity::shannons(capacity)),
     )?;
     let outpoint = fake_outpoint();
-    let header = fake_header_view(creation_block, 0, 0);
+    let header = fake_header_view(creation_block, random_u64(), random_u64());
     rpc.insert_fake_cell(outpoint.clone(), cell, Some(header));
     Ok(outpoint)
 }

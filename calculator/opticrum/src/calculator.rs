@@ -9,9 +9,9 @@ use ckb_cinnabar_calculator::{
     instruction::Instruction,
     operation::{
         basic::{
-            AddCellDep, AddHeaderDepByBlockNumber, AddInputCellByAddress, AddInputCellByOutPoint,
-            AddOutputCell, AddOutputCellByInputIndex, AddSecp256k1SighashCellDep,
-            CapacityAdjustment,
+            AddCellDep, AddHeaderDepByBlockNumber, AddHeaderDepByCellDepIndex,
+            AddHeaderDepByInputIndex, AddInputCellByAddress, AddInputCellByOutPoint, AddOutputCell,
+            AddOutputCellByInputIndex, AddSecp256k1SighashCellDep, CapacityAdjustment,
         },
         udt::AddXudtCelldep,
         Operation,
@@ -238,6 +238,10 @@ pub fn match_order<T: RPC>(
             dep_type: DepType::Code,
             with_data: true,
         }),
+        // HeaderDep for block where the channel was created
+        Box::new(AddHeaderDepByCellDepIndex {
+            celldep_index: usize::MAX,
+        }),
         // For including Secp256k1 pre-context table
         Box::new(AddSecp256k1SighashCellDep {}),
         // Consume the Order Cell
@@ -245,6 +249,10 @@ pub fn match_order<T: RPC>(
             tx_hash: order_info.order_outpoint.tx_hash.into(),
             index: order_info.order_outpoint.index,
             since: None,
+        }),
+        // HeaderDep for block where the order was created
+        Box::new(AddHeaderDepByInputIndex {
+            input_index: usize::MAX,
         }),
         // Seller provides capacity + signing
         Box::new(AddInputCellByAddress {
@@ -332,8 +340,6 @@ pub fn extract_rent<T: RPC>(
             dep_type: DepType::Code,
             with_data: true,
         }),
-        // For including Secp256k1 pre-context table
-        Box::new(AddSecp256k1SighashCellDep {}),
         Box::new(AddHeaderDepByBlockNumber {
             block_number: tip_block,
         }),

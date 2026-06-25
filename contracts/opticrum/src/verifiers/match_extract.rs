@@ -1,9 +1,13 @@
 use ckb_cinnabar_verifier::{re_exports::ckb_std, Result, Verification};
-use ckb_std::{ckb_constants::Source, debug, high_level::{load_cell_capacity, load_cell_occupied_capacity}};
+use ckb_std::{
+    ckb_constants::Source,
+    debug,
+    high_level::{load_cell_capacity, load_cell_occupied_capacity},
+};
 
 use crate::{
     error::OpticrumError,
-    utils::{find_channel_in_celldeps, has_lock_in_inputs},
+    utils::{check_channel_existence, has_lock_in_inputs},
     Branch, Context,
 };
 
@@ -34,15 +38,7 @@ impl Verification<Context> for MatchExtract {
 
         // 1. Verify channel cell still exists in CellDeps (existence only —
         //    capacity/xUDT amount was already verified at match time).
-        if !find_channel_in_celldeps(
-            &match_args.channel_outpoint,
-            None,
-            None,
-            ctx.old_state
-                .xudt
-                .as_ref()
-                .map(|(_, type_script)| Some(type_script)),
-        ) {
+        if !check_channel_existence(&match_args.channel_outpoint) {
             return Err(OpticrumError::ChannelCellNotInDep.into());
         }
 
