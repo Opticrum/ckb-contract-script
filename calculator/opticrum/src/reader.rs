@@ -19,7 +19,7 @@ use ckb_cinnabar_calculator::{
 };
 
 use crate::{
-    config::{opticrum_contract_type_id, ORDER_TO_MATCH_CAPACITY_RESERVE},
+    config::opticrum_contract_type_id,
     types::{MatchArgs, MatchData, MatchInfo, OrderArgs, OrderData, OrderInfo, OutPoint, Xudt},
 };
 
@@ -87,8 +87,7 @@ fn parse_order_cell(cell: &LiveCell) -> eyre::Result<OrderInfo> {
     let order_data = OrderData::from_slice(raw_data).map_err(|e| eyre!("Bad Order data: {}", e))?;
 
     // Real rent = unoccupied CKB minus the reserve pre-funded for Order→Match Keep
-    let ckb_capacity = real_rent_capacity(&cell.output, raw_data)?
-        .saturating_sub(ORDER_TO_MATCH_CAPACITY_RESERVE);
+    let ckb_capacity = real_rent_capacity(&cell.output, raw_data)?;
 
     // Detect xUDT by presence of a type script on the cell
     let xudt = cell.output.type_().to_opt().map(|type_script| Xudt {

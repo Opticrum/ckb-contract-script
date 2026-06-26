@@ -90,7 +90,7 @@ pub fn create_order<T: RPC>(
             lock_script: opticrum_lock(args),
             type_script: xudt_type_script.map(|x| x.into()),
             data: stored_order_data.to_bytes().to_vec(),
-            capacity: ORDER_TO_MATCH_CAPACITY_RESERVE,
+            capacity: 0,
             absolute_capacity: false,
             type_id: false,
         }));
@@ -99,7 +99,7 @@ pub fn create_order<T: RPC>(
             lock_script: opticrum_lock(args),
             type_script: None,
             data: stored_order_data.to_bytes().to_vec(),
-            capacity: rent_capacity + ORDER_TO_MATCH_CAPACITY_RESERVE,
+            capacity: rent_capacity,
             absolute_capacity: false,
             type_id: false,
         }));
@@ -264,7 +264,7 @@ pub fn match_order<T: RPC>(
             lock_script: Some(opticrum_lock(match_args.to_bytes().to_vec())),
             type_script: None,
             data: Some(match_data.to_bytes().to_vec()),
-            adjust_capacity: CapacityAdjustment::Keep,
+            adjust_capacity: CapacityAdjustment::Add(ORDER_TO_MATCH_CAPACITY_RESERVE),
         }),
     ])
 }

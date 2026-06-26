@@ -35,12 +35,16 @@ pub async fn main() -> eyre::Result<()> {
     let order_args = OrderArgs::new(fiber_pubkey, buyer_lock_hash.into());
 
     // OrderData: xudt_amount (u128, ignored for CKB orders) + channel_capacity + escrow_blocks
-    let channel_capacity = 1000u64 * ONE_CKB;
+    let channel_capacity = 20000u64 * ONE_CKB;
     let escrow_blocks = 10 * ABOUT_ONE_DAY_BLOCKS; // ~10 days
     let order_data = OrderData::new(0, channel_capacity, escrow_blocks);
 
     // Annual yield percentage (e.g. 5 = 5% APR)
-    let annual_yield = AnnualYield(5);
+    let annual_yield = AnnualYield(7);
+    println!(
+        "rent capacity: {:.2} CKB",
+        annual_yield.to_ckb(&order_data) as f64 / ONE_CKB as f64
+    );
 
     let prepare = DefaultInstruction::new(vec![Box::new(AddSecp256k1SighashCellDep {})]);
     let create = create_order::<RpcClient>(

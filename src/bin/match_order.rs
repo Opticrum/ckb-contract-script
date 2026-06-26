@@ -32,7 +32,7 @@ pub async fn main() -> eyre::Result<()> {
     )?)
     .unwrap();
     let channel_tx_hash =
-        h256!("0x2e03493880b7e09b9ecabfd16e053bfb5cf1e0e7ecbd462e7cce6011b1b91f84");
+        h256!("0x74b41bedb5f0f9add71bcbff7f822f916781e356fdd016e195305f6e85956983");
     let channel_index: u32 = 0;
     let order_index: usize = 2; // pick which scanned order to match
 
@@ -62,6 +62,7 @@ pub async fn main() -> eyre::Result<()> {
     );
 
     let match_tx = match_order::<RpcClient>(seller_address.clone(), order.clone(), match_args);
+    // let balance = balance_and_sign_with_ckb_cli(&seller_address, 1000, None);
     let balance = balance_and_sign(
         &seller_address,
         SecretKey::from_slice(&hex::decode(

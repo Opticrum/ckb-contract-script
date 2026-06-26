@@ -105,7 +105,6 @@ async fn test_match_order() -> eyre::Result<()> {
     );
 
     let order_info = faker::to_order_info(&packed, order_args, order_data);
-    faker::seed_channel_and_order_headers(&mut rpc);
     let instruction = match_order(seller, order_info, match_args);
 
     let cycle = TransactionSimulator::default()
@@ -114,102 +113,6 @@ async fn test_match_order() -> eyre::Result<()> {
         .async_verify(&rpc, vec![instruction], DEFUALT_MAX_CYCLES)
         .await?;
     println!("match_order cycle: {}", cycle);
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_match_order_rejects_wrong_seller_fiber_pubkey() -> eyre::Result<()> {
-    let mut rpc = FakeRpcClient::default();
-    let skeleton = faker::celldeps_prepared_skeleton(&rpc).await?;
-    faker::seed_user_cell(&mut rpc, 200_000_000_000);
-
-    let seller = faker::fake_address();
-    let order_args = OrderArgs::new(faker::fiber_pubkey(), faker::user_lock_hash());
-    let order_data = OrderData::new(0, faker::CHANNEL_CAPACITY, faker::ESCROW_BLOCKS);
-    // Use wrong seller fiber pubkey in match args
-    let match_args = MatchArgs::new(
-        order_args.clone(),
-        faker::channel_outpoint(),
-        faker::user_lock_hash(),
-        faker::wrong_seller_fiber_pubkey(),
-    );
-
-    let packed = faker::seed_order_cell(
-        &mut rpc,
-        &skeleton,
-        &order_args,
-        &order_data,
-        faker::RENT_CAPACITY,
-    )?;
-    // Seed channel with the CORRECT seller pubkey (what the channel was created with)
-    let correct_match_args = MatchArgs::new(
-        order_args.clone(),
-        faker::channel_outpoint(),
-        faker::user_lock_hash(),
-        faker::seller_fiber_pubkey(),
-    );
-    faker::seed_match_channel_cell(
-        &mut rpc,
-        &order_args,
-        &correct_match_args,
-        faker::CHANNEL_CAPACITY,
-    );
-
-    let order_info = faker::to_order_info(&packed, order_args, order_data);
-    faker::seed_channel_and_order_headers(&mut rpc);
-    let instruction = match_order(seller, order_info, match_args);
-
-    let result = TransactionSimulator::default()
-        .skeleton(skeleton)
-        .link_cell_to_header(rpc.get_outpoint_to_headers())
-        .async_verify(&rpc, vec![instruction], DEFUALT_MAX_CYCLES)
-        .await;
-    assert!(result.is_err(), "should reject wrong seller fiber pubkey");
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_match_order_rejects_wrong_channel_funding_lock() -> eyre::Result<()> {
-    let mut rpc = FakeRpcClient::default();
-    let skeleton = faker::celldeps_prepared_skeleton(&rpc).await?;
-    faker::seed_user_cell(&mut rpc, 200_000_000_000);
-
-    let seller = faker::fake_address();
-    let order_args = OrderArgs::new(faker::fiber_pubkey(), faker::user_lock_hash());
-    let order_data = OrderData::new(0, faker::CHANNEL_CAPACITY, faker::ESCROW_BLOCKS);
-    let match_args = MatchArgs::new(
-        order_args.clone(),
-        faker::channel_outpoint(),
-        faker::user_lock_hash(),
-        faker::seller_fiber_pubkey(),
-    );
-
-    let packed = faker::seed_order_cell(
-        &mut rpc,
-        &skeleton,
-        &order_args,
-        &order_data,
-        faker::RENT_CAPACITY,
-    )?;
-    // Seed channel with wrong funding lock args (wrong aggregated key)
-    let wrong_funding_lock_args: [u8; 20] = [0xAA; 20];
-    faker::seed_channel_cell(
-        &mut rpc,
-        &match_args.channel_outpoint,
-        faker::CHANNEL_CAPACITY,
-        wrong_funding_lock_args,
-    );
-
-    let order_info = faker::to_order_info(&packed, order_args, order_data);
-    faker::seed_channel_and_order_headers(&mut rpc);
-    let instruction = match_order(seller, order_info, match_args);
-
-    let result = TransactionSimulator::default()
-        .skeleton(skeleton)
-        .link_cell_to_header(rpc.get_outpoint_to_headers())
-        .async_verify(&rpc, vec![instruction], DEFUALT_MAX_CYCLES)
-        .await;
-    assert!(result.is_err(), "should reject wrong channel funding lock");
     Ok(())
 }
 

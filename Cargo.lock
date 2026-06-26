@@ -2117,9 +2117,11 @@ name = "opticrum-tests"
 version = "0.1.0"
 dependencies = [
  "ckb-cinnabar-calculator",
+ "hex",
  "musig2",
  "opticrum-calculator",
  "opticrum-protocol",
+ "secp256k1 0.1.0",
  "secp256k1 0.30.0",
  "tokio",
 ]

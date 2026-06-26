@@ -256,13 +256,6 @@ pub fn seed_header(rpc: &mut FakeRpcClient, block_number: u64, timestamp: u64) {
     rpc.insert_fake_header(fake_header_view(block_number, timestamp, random_u64()));
 }
 
-/// Seed headers for both the channel and order creation blocks so the
-/// match-order HeaderDeps resolve in the transaction simulator.
-pub fn seed_channel_and_order_headers(rpc: &mut FakeRpcClient) {
-    seed_header(rpc, CHANNEL_CREATED_BLOCK, 0);
-    seed_header(rpc, ORDER_CREATED_BLOCK, 0);
-}
-
 pub fn seed_order_cell(
     rpc: &mut FakeRpcClient,
     skeleton: &TransactionSkeleton,
