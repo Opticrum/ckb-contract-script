@@ -10,7 +10,6 @@ use crate::{
     utils::{find_channel_in_celldeps, has_lock_in_inputs},
     Branch, Context,
 };
-use opticrum_protocol::MatchStatus;
 
 /// Verifies that a seller has properly matched an Order Cell.
 ///
@@ -22,14 +21,11 @@ use opticrum_protocol::MatchStatus;
 /// Checks:
 /// 1. The Channel Cell identified by channel_outpoint exists in CellDeps
 ///    and has capacity >= order_data.channel_capacity
-/// 2. The channel lock args match the MuSig2-aggregated funding key from
-///    buyer + seller fiber pubkeys
-/// 3. The produced Match Cell args correctly extend the Order args
-/// 4. Match Cell data is properly initialized (rent_per_block > 0,
-///    escrow_blocks > 0, last_extraction_block == 0)
-/// 5. Match Cell capacity == Order Cell capacity (rent transferred intact)
-/// 6. Seller authorizes the transaction (lock hash in inputs)
-/// 7. Channel was created after the Order
+/// 2. Match Cell data is properly initialized (rent_per_block matches order,
+///    last_extraction_block == 0)
+/// 3. Match Cell capacity == Order Cell capacity (rent transferred intact)
+/// 4. Seller authorizes the transaction (lock hash in inputs)
+/// 5. Channel was created after the Order
 ///    (load_header(Source::Input) vs load_header(Source::CellDep))
 #[derive(Default)]
 pub struct OrderMatch;
@@ -67,30 +63,23 @@ impl Verification<Context> for OrderMatch {
             return Err(OpticrumError::ChannelCellNotInDep.into());
         };
 
-        // 2. Verify MatchData status is Frozen (initial state after matching)
-        if match_data.status != MatchStatus::Frozen {
-            return Err(OpticrumError::BadMatchStatus.into());
-        }
-
-        // 3. Seller must participate
+        // 2. Seller must participate
         let seller_present = has_lock_in_inputs(&match_args.seller_lock_hash)?;
         if !seller_present {
             debug!("Seller lock hash not found in inputs");
             return Err(OpticrumError::SellerAuthMissing.into());
         }
 
-        // 4. Validate Match Cell data initialization
-        if match_data.rent_per_block == 0.0
-            || match_data.escrow_blocks == 0
+        // 3. Validate Match Cell data initialization:
+        //    - rent_per_block must match the buyer's specified rate (byte compare for f64 safety)
+        //    - last_extraction_block must be zero (no extraction has occurred yet)
+        if order_data.shannons_per_block != match_data.shannons_per_block
             || match_data.last_extraction_block != 0
         {
             return Err(OpticrumError::MatchDataNotSet.into());
         }
 
-        // 5. Unoccupied capacity (rent pool) must transfer intact from Order to Match.
-        //    Total capacity differs by ORDER_TO_MATCH_CAPACITY_RESERVE because
-        //    the Match cell has larger args + data. We compare unoccupied capacity
-        //    to ensure the rent is preserved.
+        // 4. Unoccupied capacity (rent pool) must transfer intact from Order to Match.
         let old_unoccupied = {
             let total = load_cell_capacity(0, Source::GroupInput)
                 .map_err(|_| OpticrumError::BadOrderMatch)?;
@@ -113,7 +102,7 @@ impl Verification<Context> for OrderMatch {
             return Err(OpticrumError::ChannelCapacityMismatch.into());
         }
 
-        // 6. xUDT amount must transfer unchanged from Order to Match
+        // 5. xUDT amount must transfer unchanged from Order to Match
         if order_data.xudt_amount != match_data.xudt_amount {
             debug!(
                 "xUDT amount mismatch: order={} vs match={}",
@@ -122,7 +111,7 @@ impl Verification<Context> for OrderMatch {
             return Err(OpticrumError::BadXudtAmount.into());
         }
 
-        // 7. Channel must have been created after the order.
+        // 6. Channel must have been created after the order.
         //    GroupInput[0] = Order cell, CellDep[channel_index] = Channel cell.
         debug!("channel_index: {}", channel_index);
         let order_block =

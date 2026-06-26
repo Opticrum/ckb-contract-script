@@ -37,7 +37,10 @@ pub async fn main() -> eyre::Result<()> {
         "  remaining capacity: {} CKB",
         match_info.ckb_capacity as f64 / ONE_CKB as f64
     );
-    println!("  rent_per_block: {}", match_info.match_data.rent_per_block);
+    println!(
+        "  rent_per_block: {}",
+        match_info.match_data.shannons_per_block
+    );
     println!(
         "  last_extraction_block: {}",
         match_info.match_data.last_extraction_block

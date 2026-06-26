@@ -3,11 +3,16 @@
 
 use ckb_cinnabar_verifier::{
     cinnabar_main,
-    re_exports::ckb_std::{self, ckb_types::packed::Script},
+    re_exports::ckb_std::{
+        self,
+        ckb_constants::Source,
+        ckb_types::{packed::Script, prelude::Unpack},
+        high_level::load_header,
+    },
     Result, TREE_ROOT,
 };
 use opticrum_protocol::{
-    MatchArgs, MatchData, MatchStatus, OrderArgs, OrderData, MATCH_ARGS_LEN, ORDER_ARGS_LEN,
+    MatchArgs, MatchData, OrderArgs, OrderData, MATCH_ARGS_LEN, ORDER_ARGS_LEN,
 };
 
 mod error;
@@ -37,9 +42,6 @@ pub const FIBER_FUNDING_TYPE_ID_MOCK: [u8; 32] = [
     0x15, 0xa4, 0xca, 0x0e, 0xf3, 0xc6, 0x89, 0x15, 0x02, 0x34, 0xf0, 0xc8, 0x02, 0xa7, 0x69, 0x00,
 ];
 
-/// Approximate number of blocks in 3 days (3 × ABOUT_ONE_DAY_BLOCKS = 30,000).
-pub const ABOUT_THREE_DAYS_BLOCKS: u64 = 30_000;
-
 #[derive(Default, PartialEq, Eq)]
 enum Branch {
     Order(OrderArgs, OrderData),
@@ -64,12 +66,13 @@ impl Branch {
     }
 }
 
+/// Routes the Root verifier to the correct branch verifier.
+/// No status-based discrimination — Match→Match always routes to MatchUpdate
+/// (which internally branches on auth: seller→extract, buyer→inject/withdraw).
 enum OpticrumPattern {
     OrderCancel,
     OrderMatch,
-    MatchEnable,
-    MatchDiscard,
-    MatchExtract,
+    MatchUpdate,
     MatchDestroy,
     Unknown,
 }
@@ -100,27 +103,17 @@ impl OpticrumState {
                     _ => OpticrumPattern::Unknown,
                 }
             }
-            Branch::Match(match_args, match_data) => {
+            Branch::Match(match_args, _) => {
                 let Some(another) = another else {
                     return OpticrumPattern::MatchDestroy;
                 };
                 match &another.branch {
                     Branch::Order(_, _) => OpticrumPattern::Unknown,
-                    Branch::Match(another_match_args, another_match_data) => {
-                        if match_args != another_match_args || self.xudt != another.xudt {
-                            return OpticrumPattern::Unknown;
-                        }
-                        match (match_data.status, another_match_data.status) {
-                            (s, ns) if s == MatchStatus::Frozen && ns == MatchStatus::Enabled => {
-                                OpticrumPattern::MatchEnable
-                            }
-                            (s, ns) if s == MatchStatus::Frozen && ns == MatchStatus::Discarded => {
-                                OpticrumPattern::MatchDiscard
-                            }
-                            (s, ns) if s == MatchStatus::Enabled && ns == MatchStatus::Enabled => {
-                                OpticrumPattern::MatchExtract
-                            }
-                            _ => OpticrumPattern::Unknown,
+                    Branch::Match(another_match_args, _) => {
+                        if match_args == another_match_args && self.xudt == another.xudt {
+                            OpticrumPattern::MatchUpdate
+                        } else {
+                            OpticrumPattern::Unknown
                         }
                     }
                     _ => OpticrumPattern::Unknown,
@@ -130,48 +123,31 @@ impl OpticrumState {
         }
     }
 
-    pub fn liquidity_rent(&self) -> u64 {
+    /// Compute accumulated linear rent
+    pub fn liquidity_rent(&self) -> Result<u64> {
         let Branch::Match(_, match_data) = &self.branch else {
-            return 0;
+            return Err(OpticrumError::UnexpectedBranch.into());
         };
         let base_block = if match_data.last_extraction_block == 0 {
-            load_header_block_number(1).unwrap_or_default()
+            load_header(0, Source::GroupInput)
+                .map_err(|_| OpticrumError::HeaderNotSet)?
+                .raw()
+                .number()
+                .unpack()
         } else {
             match_data.last_extraction_block
         };
-        let tip_block = load_header_block_number(0).unwrap_or_default();
+        let tip_block = load_header_block_number(0).map_err(|_| OpticrumError::HeaderNotSet)?;
         let elapsed = tip_block.saturating_sub(base_block);
-        (match_data.rent_per_block * elapsed as f64) as u64
+        Ok(match_data.shannons_per_block * elapsed)
     }
 
-    pub fn is_exhausted(&self) -> bool {
-        let liquidity_rent = self.liquidity_rent();
+    pub fn is_exhausted(&self) -> Result<bool> {
+        let liquidity_rent = self.liquidity_rent()?;
         if let Some((xudt_amount, _)) = &self.xudt {
-            *xudt_amount <= liquidity_rent as u128
+            Ok(*xudt_amount <= liquidity_rent as u128)
         } else {
-            self.unoccupied_capacity <= liquidity_rent
-        }
-    }
-
-    pub fn good_extraction(&self, another: &OpticrumState) -> bool {
-        let Branch::Match(_, match_data) = &self.branch else {
-            return false;
-        };
-        let Branch::Match(_, another_match_data) = &another.branch else {
-            return false;
-        };
-        // Both old and new must be Enabled for extraction
-        if match_data.status != MatchStatus::Enabled
-            || another_match_data.status != MatchStatus::Enabled
-        {
-            return false;
-        }
-        let liquidity_rent = self.liquidity_rent();
-        let tip_block = load_header_block_number(0).unwrap_or_default();
-        if self.xudt.is_some() {
-            match_data.good_extraction(another_match_data, tip_block, liquidity_rent as u128)
-        } else {
-            match_data.good_extraction(another_match_data, tip_block, 0)
+            Ok(self.unoccupied_capacity <= liquidity_rent)
         }
     }
 }
@@ -189,8 +165,6 @@ cinnabar_main!(
     (TREE_ROOT, Root),
     ("order_cancel", OrderCancel),
     ("order_match", OrderMatch),
-    ("match_enable", MatchEnable),
-    ("match_discard", MatchDiscard),
-    ("match_extract", MatchExtract),
+    ("match_update", MatchUpdate),
     ("match_destroy", MatchDestroy),
 );

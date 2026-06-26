@@ -3,14 +3,12 @@
 //! Protocol types (`OrderArgs`, `OrderData`, `MatchArgs`, `MatchData`,
 //! and all length constants) are defined canonically in `opticrum-protocol`
 //! and re-exported here. This module adds only the types that live purely
-//! off-chain: `AnnualYield`, `OrderInfo`, `MatchInfo`, and `Xudt`.
+//! off-chain: `OrderInfo`, `MatchInfo`, and `Xudt`.
 
 use ckb_cinnabar_calculator::re_exports::ckb_types::packed::Script;
 
 // Re-export all protocol types and constants
 pub use opticrum_protocol::*;
-
-use crate::config::ABOUT_ONE_DAY_BLOCKS;
 
 // ---------------------------------------------------------------------------
 // Xudt — token specification (off-chain aggregation, not on-chain layout)
@@ -24,27 +22,6 @@ use crate::config::ABOUT_ONE_DAY_BLOCKS;
 pub struct Xudt {
     pub amount: u128,
     pub type_script: Script,
-}
-
-// ---------------------------------------------------------------------------
-// AnnualYield — annual yield in percentage
-// ---------------------------------------------------------------------------
-
-/// Represents the annual yield in percentage.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AnnualYield(pub u8);
-
-impl AnnualYield {
-    pub fn to_ckb(&self, order: &OrderData) -> u64 {
-        let one_year_profit = order.channel_capacity as f64 * self.0 as f64 / 100.0;
-        let one_day_profit = one_year_profit / 365.0;
-        let days = order.escrow_blocks as f64 / ABOUT_ONE_DAY_BLOCKS as f64;
-        (one_day_profit * days) as u64
-    }
-
-    pub fn to_xudt(&self, order: &OrderData) -> u128 {
-        self.to_ckb(order) as u128
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -79,18 +56,18 @@ pub struct MatchInfo {
 }
 
 impl MatchInfo {
+    /// Compute extractable rent since the last extraction (or match creation).
     pub fn extraction_amount(&self, tip_block: u64) -> u64 {
         let start_block = if self.match_data.last_extraction_block == 0 {
-            // Never extracted — count from match creation
             self.match_current_block
         } else {
             self.match_data.last_extraction_block
         };
-
         let elapsed = tip_block.saturating_sub(start_block);
-        (self.match_data.rent_per_block * elapsed as f64) as u64
+        self.match_data.shannons_per_block * elapsed
     }
 
+    /// Returns true when accumulated rent has consumed all remaining value.
     pub fn is_exhausted(&self, tip_block: u64) -> bool {
         let accumulated_rent = self.extraction_amount(tip_block);
         match &self.xudt {

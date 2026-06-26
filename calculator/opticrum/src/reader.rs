@@ -162,7 +162,7 @@ pub async fn scan_orders<T: RPC>(rpc: &T) -> eyre::Result<Vec<OrderInfo>> {
 /// Scan all live Match cells on-chain.
 ///
 /// Queries the indexer for cells with the Opticrum lock whose args length
-/// is exactly `MATCH_ARGS_LEN` (166 bytes).
+/// is exactly `MATCH_ARGS_LEN` (133 bytes).
 pub async fn scan_matches<T: RPC>(rpc: &T) -> eyre::Result<Vec<MatchInfo>> {
     let query = opticrum_query(rpc).await?;
 

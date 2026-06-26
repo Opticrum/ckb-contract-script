@@ -43,9 +43,7 @@ impl Verification<Context> for Root {
         match ctx.old_state.compare(ctx.new_state.as_ref()) {
             OpticrumPattern::OrderCancel => Ok(Some("order_cancel")),
             OpticrumPattern::OrderMatch => Ok(Some("order_match")),
-            OpticrumPattern::MatchEnable => Ok(Some("match_enable")),
-            OpticrumPattern::MatchDiscard => Ok(Some("match_discard")),
-            OpticrumPattern::MatchExtract => Ok(Some("match_extract")),
+            OpticrumPattern::MatchUpdate => Ok(Some("match_update")),
             OpticrumPattern::MatchDestroy => Ok(Some("match_destroy")),
             _ => Err(OpticrumError::UnknownState.into()),
         }

@@ -30,7 +30,10 @@ pub async fn main() -> eyre::Result<()> {
             "  channel_capacity: {} CKB",
             o.order_data.channel_capacity as f64 / ONE_CKB as f64
         );
-        println!("  escrow_blocks: {}", o.order_data.escrow_blocks);
+        println!(
+            "  rent_per_block: {:.0} shannons/block",
+            o.order_data.shannons_per_block
+        );
         println!(
             "  rent_capacity: {} CKB",
             o.ckb_capacity as f64 / ONE_CKB as f64

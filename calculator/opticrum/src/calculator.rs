@@ -23,9 +23,7 @@ use ckb_cinnabar_calculator::{
 use crate::{
     config::ORDER_TO_MATCH_CAPACITY_RESERVE,
     operation::{opticrum_lock, AddOpticrumContractCelldep},
-    types::{
-        AnnualYield, MatchArgs, MatchData, MatchInfo, MatchStatus, OrderArgs, OrderData, OrderInfo,
-    },
+    types::{MatchArgs, MatchData, MatchInfo, OrderArgs, OrderData, OrderInfo},
 };
 
 // ---------------------------------------------------------------------------
@@ -33,6 +31,10 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 /// Creates an Order Cell on-chain.
+///
+/// The buyer directly specifies `rent_per_block` in the OrderData — the
+/// per-block rate the seller will extract from the Match cell. The total
+/// rent capacity locked up is passed as `rent_capacity` (for CKB orders).
 ///
 /// # Transaction Structure
 ///
@@ -42,42 +44,33 @@ use crate::{
 ///
 /// Inputs:
 ///   [0] Buyer's cell (must match buyer_lock_hash in Order args)
-///       lock:   buyer's personal lock (provides signature/witness)
 ///
 /// Outputs:
 ///   [0] Order Cell
 ///       lock:   Opticrum (ORDER_ARGS_LEN-byte args)
 ///       type:   none / xUDT type script
-///       data:   OrderData (ORDER_DATA_LEN bytes: xudt_amount + channel_capacity + escrow_blocks)
-///       capacity: rent_capacity (+ ORDER_TO_MATCH_CAPACITY_RESERVE for CKB) so
-///                 Order→Match can use Keep without seller CKB; xUDT adds only the reserve
+///       data:   OrderData (xudt_amount + channel_capacity + rent_per_block)
+///       capacity: rent_capacity (+ ORDER_TO_MATCH_CAPACITY_RESERVE)
 /// ```
-///
-/// The Order Cell is created with the Opticrum lock script. The lock does NOT
-/// execute on creation (ScriptPattern::Create is rejected), so no verification
-/// runs at this point. The buyer's own lock on Inputs[0] handles signing.
 pub fn create_order<T: RPC>(
     buyer: Address,
     order_args: &OrderArgs,
     order_data: &OrderData,
-    annual_yield: AnnualYield,
+    rent_capacity: u64,
     xudt_type_script: Option<Script>,
 ) -> Instruction<T> {
     let args = order_args.to_bytes().to_vec();
 
-    // Compute the actual values from yield
-    let xudt_amount = annual_yield.to_xudt(order_data);
-    let rent_capacity = annual_yield.to_ckb(order_data);
-
-    // Build the complete OrderData to store on-chain
+    // Build the OrderData to store on-chain.
+    // xudt_amount is zero for CKB-only orders (no xUDT type script).
     let stored_order_data = OrderData::new(
         if xudt_type_script.is_some() {
-            xudt_amount
+            order_data.xudt_amount
         } else {
             0
         },
         order_data.channel_capacity,
-        order_data.escrow_blocks,
+        order_data.shannons_per_block,
     );
 
     let mut operations: Vec<Box<dyn Operation<T>>> = vec![
@@ -116,25 +109,9 @@ pub fn create_order<T: RPC>(
 
 /// Cancels an unmatched Order Cell, returning capacity to the buyer.
 ///
-/// # Transaction Structure
-///
-/// ```text
-/// CellDeps:
-///   [0] Opticrum contract code cell (resolved via type_id)
-///
-/// Inputs:
-///   [0] Order Cell (consumed — ScriptPattern::Burn)
-///       lock:   Opticrum (ORDER_ARGS_LEN-byte Order args)
-///       data:   OrderData (ORDER_DATA_LEN bytes)
-///       capacity: original rent_capacity
-///   [1] Buyer's cell (must match buyer_lock_hash in Order args)
-///       lock:   buyer's personal lock (provides signature/witness)
-/// ```
-///
 /// The Order Cell is burned (appears only in inputs), routing to OrderCancel
-/// verifier. The verifier checks that Inputs[1]'s lock hash matches the
-/// `buyer_lock_hash` embedded in the Order args — proving the buyer
-/// authorized the cancellation.
+/// verifier. The verifier checks that the buyer's lock hash matches the
+/// `buyer_lock_hash` embedded in the Order args.
 pub fn cancel_order<T: RPC>(buyer: Address, order_info: OrderInfo) -> Instruction<T> {
     let mut operations: Vec<Box<dyn Operation<T>>> = vec![
         Box::new(AddOpticrumContractCelldep {}),
@@ -172,64 +149,35 @@ pub fn cancel_order<T: RPC>(buyer: Address, order_info: OrderInfo) -> Instructio
 /// The channel must already exist on-chain (created via Fiber API).
 /// This transaction references it as a CellDep and produces a Match Cell.
 ///
+/// `rent_per_block` is copied directly from the buyer's OrderData — no
+/// derivation from AnnualYield needed.
+///
 /// # Transaction Structure
 ///
 /// ```text
 /// CellDeps:
-///   [0] Opticrum contract code cell (resolved via type_id)
-///   [1] Channel Cell (pre-created via Fiber API)
-///       lock:   the channel's lock script
-///       capacity: >= order.channel_capacity (verified on-chain)
-///       This cell is NOT consumed — referenced via its OutPoint to prove
-///       existence and verify capacity.
+///   [0] Opticrum contract code cell
+///   [1] Channel Cell (pre-created via Fiber API, NOT consumed)
 ///
 /// Inputs:
-///   [0] Order Cell (consumed — ScriptPattern::Transfer)
-///       lock:   Opticrum (ORDER_ARGS_LEN-byte args)
-///       data:   OrderData (ORDER_DATA_LEN bytes)
-///       capacity: rent_capacity
-///   [1] Seller's cell (provides CKB for fees + witness/signature)
-///       lock:   seller's personal lock
+///   [0] Order Cell (consumed)
+///   [1] Seller's cell (provides CKB + witness)
 ///
 /// Outputs:
 ///   [0] Match Cell (produced from Order Cell)
-///       lock:   Opticrum (MATCH_ARGS_LEN-byte args: Order args
-///                         + channel_outpoint + seller_lock_hash + fiber_pubkey)
-///       type:   none
-///       data:   MatchData (MATCH_DATA_LEN bytes, last_extraction=0)
-///       capacity: rent_capacity (MUST equal Inputs[0].capacity)
-///   [1] Seller change cell
-///       lock:   same as Inputs[1] (seller's lock)
-///       capacity: Inputs[1].capacity - tx_fee (adjusted)
+///       lock:   Opticrum (MATCH_ARGS_LEN-byte args)
+///       data:   MatchData (rent_per_block from order, last_extraction_block=0)
+///       capacity: Order capacity + ORDER_TO_MATCH_CAPACITY_RESERVE
 /// ```
-///
-/// The Order Cell undergoes ScriptPattern::Transfer because a matching Opticrum
-/// output (the Match Cell) is produced. The OrderMatch verifier checks:
-/// - Channel Cell identified by channel_outpoint has capacity >= order.channel_capacity
-/// - Match args' first ORDER_ARGS_LEN bytes match Order args
-/// - Match data initialized correctly (rent_per_block > 0, escrow_blocks > 0, last_extraction == 0)
-/// - Match capacity equals Order capacity
 pub fn match_order<T: RPC>(
     seller: Address,
     order_info: OrderInfo,
     match_args: MatchArgs,
 ) -> Instruction<T> {
-    let escrow_blocks = order_info.order_data.escrow_blocks;
-    let match_data = if let Some(ref x) = order_info.xudt {
-        MatchData::new(
-            x.amount,
-            x.amount as f64 / escrow_blocks as f64,
-            escrow_blocks,
-            MatchStatus::Frozen,
-        )
-    } else {
-        MatchData::new(
-            0,
-            order_info.ckb_capacity as f64 / escrow_blocks as f64,
-            escrow_blocks,
-            MatchStatus::Frozen,
-        )
-    };
+    let rent_per_block = order_info.order_data.shannons_per_block;
+    let xudt_amount = order_info.xudt.as_ref().map(|x| x.amount).unwrap_or(0);
+
+    let match_data = MatchData::new(xudt_amount, rent_per_block);
 
     Instruction::new(vec![
         // Opticrum contract dep
@@ -272,225 +220,37 @@ pub fn match_order<T: RPC>(
 }
 
 // ---------------------------------------------------------------------------
-// 4a. Confirm Match — buyer enables a Frozen match
-// ---------------------------------------------------------------------------
-
-/// Buyer confirms a Frozen Match, transitioning it to Enabled.
-///
-/// After offline manual verification of the channel (via outpoint), the
-/// buyer calls this to allow the seller to start extracting rent.
-///
-/// # Transaction Structure
-///
-/// ```text
-/// CellDeps:
-///   [0] Opticrum contract code cell
-///
-/// HeaderDeps:
-///   [0] tip block
-///
-/// Inputs:
-///   [0] Frozen Match Cell (consumed)
-///   [1] Buyer's cell (must match buyer_lock_hash)
-///
-/// Outputs:
-///   [0] Enabled Match Cell (capacity unchanged, status=Enabled)
-/// ```
-pub fn confirm_match<T: RPC>(buyer: Address, match_info: MatchInfo) -> Instruction<T> {
-    let mut match_data = match_info.match_data;
-    match_data.status = MatchStatus::Enabled;
-
-    Instruction::new(vec![
-        Box::new(AddOpticrumContractCelldep {}),
-        Box::new(AddInputCellByOutPoint {
-            tx_hash: match_info.match_outpoint.tx_hash.into(),
-            index: match_info.match_outpoint.index,
-            since: None,
-        }),
-        Box::new(AddInputCellByAddress {
-            address: buyer.clone(),
-        }),
-        Box::new(AddOutputCellByInputIndex {
-            input_index: 0,
-            lock_script: None,
-            type_script: None,
-            data: Some(match_data.to_bytes().to_vec()),
-            adjust_capacity: CapacityAdjustment::Keep,
-        }),
-    ])
-}
-
-// ---------------------------------------------------------------------------
-// 4b. Auto-Enable Match — seller activates Frozen match after 3 days
-// ---------------------------------------------------------------------------
-
-/// Seller auto-enables a Frozen Match after the 3-day buyer review window
-/// has elapsed.
-///
-/// # Transaction Structure
-///
-/// ```text
-/// CellDeps:
-///   [0] Opticrum contract code cell
-///
-/// HeaderDeps:
-///   [0] tip block (must be >= match_creation + 3 days)
-///   [1] match creation block
-///
-/// Inputs:
-///   [0] Frozen Match Cell (consumed)
-///   [1] Seller's cell (must match seller_lock_hash)
-///
-/// Outputs:
-///   [0] Enabled Match Cell (capacity unchanged, status=Enabled)
-/// ```
-pub fn auto_enable_match<T: RPC>(
-    seller: Address,
-    match_info: MatchInfo,
-    tip_block: u64,
-) -> Instruction<T> {
-    let mut match_data = match_info.match_data;
-    match_data.status = MatchStatus::Enabled;
-
-    Instruction::new(vec![
-        Box::new(AddOpticrumContractCelldep {}),
-        Box::new(AddHeaderDepByBlockNumber {
-            block_number: tip_block,
-        }),
-        Box::new(AddInputCellByOutPoint {
-            tx_hash: match_info.match_outpoint.tx_hash.into(),
-            index: match_info.match_outpoint.index,
-            since: None,
-        }),
-        Box::new(AddHeaderDepByInputIndex {
-            input_index: usize::MAX,
-        }),
-        Box::new(AddInputCellByAddress {
-            address: seller.clone(),
-        }),
-        Box::new(AddOutputCellByInputIndex {
-            input_index: 0,
-            lock_script: None,
-            type_script: None,
-            data: Some(match_data.to_bytes().to_vec()),
-            adjust_capacity: CapacityAdjustment::Keep,
-        }),
-    ])
-}
-
-// ---------------------------------------------------------------------------
-// 4c. Discard Match — buyer rejects a Frozen match
-// ---------------------------------------------------------------------------
-
-/// Buyer rejects a Frozen Match, extracting all extra capacity (CKB) or
-/// all xUDT (xUDT matches), leaving the cell in Discarded state for the
-/// seller to destroy.
-///
-/// # Transaction Structure
-///
-/// ```text
-/// CellDeps:
-///   [0] Opticrum contract code cell
-///
-/// Inputs:
-///   [0] Frozen Match Cell (consumed)
-///   [1] Buyer's cell (must match buyer_lock_hash)
-///
-/// Outputs:
-///   [0] Discarded Match Cell (status=Discarded, xudt_amount=0 for xUDT matches)
-///   [1] Buyer change cell (absorbs extracted capacity / xUDT)
-/// ```
-pub fn discard_match<T: RPC>(buyer: Address, match_info: MatchInfo) -> Instruction<T> {
-    let mut match_data = match_info.match_data;
-    match_data.status = MatchStatus::Discarded;
-
-    let mut operations: Vec<Box<dyn Operation<T>>> = vec![
-        Box::new(AddOpticrumContractCelldep {}),
-        Box::new(AddInputCellByOutPoint {
-            tx_hash: match_info.match_outpoint.tx_hash.into(),
-            index: match_info.match_outpoint.index,
-            since: None,
-        }),
-        Box::new(AddInputCellByAddress {
-            address: buyer.clone(),
-        }),
-        Box::new(AddOutputCellByInputIndex {
-            input_index: 0,
-            lock_script: None,
-            type_script: None,
-            data: Some(match_data.to_bytes().to_vec()),
-            adjust_capacity: CapacityAdjustment::BuildExact,
-        }),
-    ];
-
-    if let Some(ref x) = match_info.xudt {
-        operations.push(Box::new(AddXudtCelldep {}));
-        // Return xUDT to buyer
-        operations.push(Box::new(AddOutputCell {
-            lock_script: buyer.into(),
-            type_script: Some(x.type_script.clone().into()),
-            data: x.amount.to_le_bytes().to_vec(),
-            capacity: 0,
-            absolute_capacity: false,
-            type_id: false,
-        }));
-    }
-
-    Instruction::new(operations)
-}
-
-// ---------------------------------------------------------------------------
 // 4. Extract Rent — seller withdraws linear rent
 // ---------------------------------------------------------------------------
 
 /// Seller extracts rent from a Match Cell.
 ///
-/// Must be called periodically before escrow expires.
+/// No status check needed — the match is always active after creation.
+/// If exhausted, delegates to `destroy_match`.
+///
+/// Rent formula (linear):
+///   extractable = rent_per_block × (tip_block - last_extraction_block)
 ///
 /// # Transaction Structure
 ///
 /// ```text
 /// CellDeps:
-///   [0] Opticrum contract code cell (resolved via type_id)
+///   [0] Opticrum contract code cell
+///   [1] Channel Cell (existence check)
 ///
 /// HeaderDeps:
-///   [0] Header at match_creation_block (only on first extraction)
-///   [1] Header at tip_block (current chain tip for elapsed-block calculation)
+///   [0] tip block
+///   [1] match creation block (only on first extraction)
 ///
 /// Inputs:
-///   [0] Match Cell (consumed — ScriptPattern::Transfer)
-///       lock:   Opticrum (MATCH_ARGS_LEN-byte Match args)
-///       data:   MatchData (MATCH_DATA_LEN bytes)
-///       capacity: current remaining rent
-///   [1] Seller's cell (must match seller_lock_hash in Match args)
-///       lock:   seller's personal lock (provides signature/witness)
+///   [0] Match Cell (consumed)
+///   [1] Seller's cell (must match seller_lock_hash)
 ///
 /// Outputs:
 ///   [0] Updated Match Cell (unless exhausted)
-///       lock:   same as Inputs[0] (Match args unchanged)
-///       type:   none
-///       data:   MatchData (same xudt_amount, same rent_per_block,
-///                           same escrow_blocks,
-///                           last_extraction_block = tip_block)
-///       capacity: Inputs[0].capacity - extracted_rent
-///   [1] Seller cell + extracted rent
-///       lock:   same as Inputs[1] (seller's lock)
-///       capacity: Inputs[1].capacity + extracted_rent - tx_fee
+///       data: MatchData (last_extraction_block updated)
+///       capacity: reduced by rent_extraction (CKB) or kept (xUDT)
 /// ```
-///
-/// The Match Cell undergoes ScriptPattern::Transfer because an updated Match
-/// Cell appears in outputs. The MatchExtract verifier checks:
-/// - Seller participates (lock hash in inputs)
-/// - Exactly 1 Match input → 1 Match output (or 0 if exhausted)
-/// - Extraction amount == rent_per_block × elapsed_blocks (linear)
-/// - If accumulated rent exceeds remaining capacity, match is "exhausted":
-///   all remaining capacity + xUDT is released to seller
-/// - Match data updated correctly (only last_extraction_block changes;
-///   rent_per_block and escrow_blocks stay the same)
-/// - Match args unchanged
-///
-/// Rent formula (linear):
-///   extractable = rent_per_block × (tip_block - last_extraction_block)
 pub fn extract_rent<T: RPC>(
     seller: Address,
     match_info: MatchInfo,
@@ -500,7 +260,6 @@ pub fn extract_rent<T: RPC>(
         return destroy_match(seller, match_info, tip_block);
     }
 
-    // If the match is exhausted, return the remaining xudt or ckb to the seller
     let mut operations: Vec<Box<dyn Operation<T>>> = vec![
         Box::new(AddOpticrumContractCelldep {}),
         Box::new(AddCellDep {
@@ -513,6 +272,150 @@ pub fn extract_rent<T: RPC>(
         Box::new(AddHeaderDepByBlockNumber {
             block_number: tip_block,
         }),
+        Box::new(AddInputCellByAddress {
+            address: seller.clone(),
+        }),
+        Box::new(AddInputCellByOutPoint {
+            tx_hash: match_info.match_outpoint.tx_hash.into(),
+            index: match_info.match_outpoint.index,
+            since: None,
+        }),
+    ];
+
+    if match_info.match_data.last_extraction_block == 0 {
+        // Match cell is at input_index 0 (added first above)
+        operations.push(Box::new(AddHeaderDepByInputIndex {
+            input_index: usize::MAX,
+        }));
+    }
+
+    let rent_extraction = match_info.extraction_amount(tip_block);
+    let mut new_match_data = match_info.match_data;
+    new_match_data.last_extraction_block = tip_block;
+    new_match_data.xudt_amount = 0;
+    if let Some(ref x) = match_info.xudt {
+        new_match_data.xudt_amount = x.amount.saturating_sub(rent_extraction as u128);
+        operations.push(Box::new(AddOutputCellByInputIndex {
+            input_index: usize::MAX,
+            data: Some(new_match_data.to_bytes().to_vec()),
+            lock_script: None,
+            type_script: None,
+            adjust_capacity: CapacityAdjustment::Keep,
+        }));
+    } else {
+        operations.push(Box::new(AddOutputCellByInputIndex {
+            input_index: usize::MAX,
+            data: Some(new_match_data.to_bytes().to_vec()),
+            lock_script: None,
+            type_script: None,
+            adjust_capacity: CapacityAdjustment::Subtract(rent_extraction),
+        }));
+    }
+
+    Instruction::new(operations)
+}
+
+// ---------------------------------------------------------------------------
+// 5. Update Match (Buyer) — inject or withdraw funds
+// ---------------------------------------------------------------------------
+
+/// Buyer injects or withdraws capacity / xUDT from a Match Cell.
+///
+/// The buyer can freely adjust the cell's value (xUDT amount or CKB capacity)
+/// but cannot destroy the cell. At most they can empty it down to the
+/// minimum occupied capacity.
+///
+/// `rent_per_block` and `last_extraction_block` are preserved.
+///
+/// # Transaction Structure
+///
+/// ```text
+/// CellDeps:
+///   [0] Opticrum contract code cell
+///
+/// Inputs:
+///   [0] Match Cell (consumed)
+///   [1] Buyer's cell (must match buyer_lock_hash)
+///
+/// Outputs:
+///   [0] Updated Match Cell
+///       data: MatchData (xudt_amount may change, rent_per_block + last_extraction_block preserved)
+///       capacity: adjusted by capacity_delta
+/// ```
+pub fn update_match_buyer<T: RPC>(
+    buyer: Address,
+    match_info: MatchInfo,
+    new_xudt_amount: u128,
+    capacity_delta: i64,
+) -> Instruction<T> {
+    let mut new_match_data = match_info.match_data;
+    new_match_data.xudt_amount = new_xudt_amount;
+    // rent_per_block and last_extraction_block are preserved by not changing them
+
+    let adjust = if capacity_delta >= 0 {
+        CapacityAdjustment::Add(capacity_delta as u64)
+    } else {
+        CapacityAdjustment::Subtract((-capacity_delta) as u64)
+    };
+
+    let operations: Vec<Box<dyn Operation<T>>> = vec![
+        Box::new(AddOpticrumContractCelldep {}),
+        Box::new(AddInputCellByOutPoint {
+            tx_hash: match_info.match_outpoint.tx_hash.into(),
+            index: match_info.match_outpoint.index,
+            since: None,
+        }),
+        Box::new(AddInputCellByAddress {
+            address: buyer.clone(),
+        }),
+        Box::new(AddOutputCellByInputIndex {
+            input_index: 0,
+            lock_script: None,
+            type_script: None,
+            data: Some(new_match_data.to_bytes().to_vec()),
+            adjust_capacity: adjust,
+        }),
+    ];
+
+    Instruction::new(operations)
+}
+
+// ---------------------------------------------------------------------------
+// 6. Destroy Match — seller sweeps exhausted match
+// ---------------------------------------------------------------------------
+
+/// Destroys an exhausted Match Cell, returning remaining funds to the seller.
+///
+/// Only the seller can destroy, and only when the match is exhausted
+/// (accumulated rent >= remaining value).
+///
+/// # Transaction Structure
+///
+/// ```text
+/// CellDeps:
+///   [0] Opticrum contract code cell
+///
+/// HeaderDeps:
+///   [0] tip block
+///   [1] match creation block (if never extracted)
+///
+/// Inputs:
+///   [0] Match Cell (consumed — Burn)
+///   [1] Seller's cell
+///
+/// Outputs:
+///   [0] Seller cell with remaining funds
+/// ```
+pub fn destroy_match<T: RPC>(
+    seller: Address,
+    match_info: MatchInfo,
+    tip_block: u64,
+) -> Instruction<T> {
+    let mut operations: Vec<Box<dyn Operation<T>>> = vec![
+        Box::new(AddOpticrumContractCelldep {}),
+        Box::new(AddHeaderDepByBlockNumber {
+            block_number: tip_block,
+        }),
         Box::new(AddInputCellByOutPoint {
             tx_hash: match_info.match_outpoint.tx_hash.into(),
             index: match_info.match_outpoint.index,
@@ -529,108 +432,13 @@ pub fn extract_rent<T: RPC>(
         }));
     }
 
-    let rent_extraction = match_info.extraction_amount(tip_block);
-    let mut new_match_data = match_info.match_data;
-    new_match_data.last_extraction_block = tip_block;
-    new_match_data.xudt_amount = 0;
-    if let Some(ref x) = match_info.xudt {
-        new_match_data.xudt_amount = x.amount.saturating_sub(rent_extraction as u128);
-        operations.push(Box::new(AddOutputCellByInputIndex {
-            input_index: 0,
-            data: Some(new_match_data.to_bytes().to_vec()),
-            lock_script: None,
-            type_script: None,
-            adjust_capacity: CapacityAdjustment::Keep,
-        }));
-    } else {
-        operations.push(Box::new(AddOutputCellByInputIndex {
-            input_index: 0,
-            data: Some(new_match_data.to_bytes().to_vec()),
-            lock_script: None,
-            type_script: None,
-            adjust_capacity: CapacityAdjustment::Subtract(rent_extraction),
-        }));
-    }
-
-    Instruction::new(operations)
-}
-
-// ---------------------------------------------------------------------------
-// 5. Destroy Match — anyone sweeps remaining after exhaustion
-// ---------------------------------------------------------------------------
-
-/// Destroys an exhausted Match Cell, returning remaining funds to the claimant.
-///
-/// This is the safety valve: if the seller abandons the match (forgets or
-/// fails to extract), anyone can call this after enough blocks have passed
-/// for the rent to fully vest.
-///
-/// # Transaction Structure
-///
-/// ```text
-/// CellDeps:
-///   [0] Opticrum contract code cell (resolved via type_id)
-///
-/// HeaderDeps:
-///   [0] Header at match_creation_block (proves when the match was created)
-///   [1] Header at tip_block (current chain tip for exhaustion check)
-///
-/// Inputs:
-///   [0] Match Cell (consumed — ScriptPattern::Burn)
-///       lock:   Opticrum (MATCH_ARGS_LEN-byte Match args)
-///       data:   MatchData (MATCH_DATA_LEN bytes)
-///       capacity: remaining rent
-///   [1] Claimant's cell (provides CKB for fees + witness/signature)
-///       lock:   claimant's personal lock
-///
-/// No authorization required beyond the exhaustion check — any third party
-/// can sweep an abandoned Match. The seller's economic incentive to extract
-/// regularly prevents premature destruction.
-/// ```
-///
-/// The Match Cell undergoes ScriptPattern::Burn because no Opticrum output
-/// is produced. The MatchDestroy verifier checks:
-/// - Match is exhausted: rent_per_block × (tip - last_extraction_or_creation)
-///   >= remaining capacity
-pub fn destroy_match<T: RPC>(
-    claimant: Address,
-    match_info: MatchInfo,
-    tip_block: u64,
-) -> Instruction<T> {
-    assert_ne!(
-        match_info.match_data.status,
-        MatchStatus::Frozen,
-        "Cannot destroy a Frozen match"
-    );
-
-    let mut operations: Vec<Box<dyn Operation<T>>> = vec![
-        Box::new(AddOpticrumContractCelldep {}),
-        Box::new(AddHeaderDepByBlockNumber {
-            block_number: tip_block,
-        }),
-        Box::new(AddInputCellByOutPoint {
-            tx_hash: match_info.match_outpoint.tx_hash.into(),
-            index: match_info.match_outpoint.index,
-            since: None,
-        }),
-        Box::new(AddInputCellByAddress {
-            address: claimant.clone(),
-        }),
-    ];
-
-    if match_info.match_data.last_extraction_block == 0 {
-        operations.push(Box::new(AddHeaderDepByBlockNumber {
-            block_number: match_info.match_current_block,
-        }));
-    }
-
-    // Transfer remaining xUDT back to claimant if any
+    // Transfer remaining xUDT back to seller if any
     if let Some(ref x) = match_info.xudt {
         operations.push(Box::new(AddXudtCelldep {}));
         operations.push(Box::new(AddOutputCellByInputIndex {
             input_index: 0,
             data: Some(x.amount.to_le_bytes().to_vec()),
-            lock_script: Some(claimant.into()),
+            lock_script: Some(seller.into()),
             type_script: None,
             adjust_capacity: CapacityAdjustment::Keep,
         }));
@@ -638,7 +446,7 @@ pub fn destroy_match<T: RPC>(
         operations.push(Box::new(AddOutputCellByInputIndex {
             input_index: 0,
             data: Some(Vec::new()),
-            lock_script: Some(claimant.into()),
+            lock_script: Some(seller.into()),
             type_script: None,
             adjust_capacity: CapacityAdjustment::Keep,
         }));

@@ -11,8 +11,6 @@ use ckb_cinnabar_calculator::{
 use opticrum_protocol::{MATCH_ARGS_LEN, MATCH_DATA_LEN, ORDER_ARGS_LEN, ORDER_DATA_LEN};
 
 pub const OPTICRUM_CONTRACT_NAME: &str = "opticrum";
-pub const ABOUT_ONE_DAY_BLOCKS: u64 = 10_000;
-pub const ABOUT_THREE_DAYS_BLOCKS: u64 = 30_000;
 pub const CKB_DECIMAL: u64 = 100_000_000;
 
 /// Extra capacity (shannons) pre-funded on Order cells above rent so Order→Match

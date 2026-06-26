@@ -46,10 +46,6 @@ path = "src/bin/match_order.rs"
 name = "extract_rent"
 path = "src/bin/extract_rent.rs"
 
-[[bin]]
-name = "review_match"
-path = "src/bin/review_match.rs"
-
 [dependencies]
 ckb-cinnabar = { workspace = true }
 opticrum-calculator = { path = "calculator/opticrum" }

@@ -12,7 +12,6 @@ pub async fn main() -> eyre::Result<()> {
     println!("Found {} Match cells:\n", matches.len());
 
     for (i, m) in matches.iter().enumerate() {
-        let status_str = format!("{:?}", m.match_data.status);
         println!("--- Match #{} ---", i);
         println!(
             "  outpoint: {}:{}",
@@ -36,15 +35,17 @@ pub async fn main() -> eyre::Result<()> {
             "  seller_lock_hash: {}",
             hex_string(&m.match_args.seller_lock_hash)
         );
-        println!("  status: {}", status_str);
         println!(
-            "  ckb_capacity: {} CKB",
+            "  rent_per_block: {:.0} shannons/block",
+            m.match_data.shannons_per_block
+        );
+        println!(
+            "  ckb_capacity: {:.2} CKB",
             m.ckb_capacity as f64 / ONE_CKB as f64
         );
         if let Some(ref x) = m.xudt {
             println!("  xudt_amount: {}", x.amount);
         }
-        println!("  escrow_blocks: {}", m.match_data.escrow_blocks);
         println!(
             "  last_extraction_block: {}",
             m.match_data.last_extraction_block

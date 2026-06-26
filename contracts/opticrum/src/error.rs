@@ -15,12 +15,10 @@ define_errors!(OpticrumError, {
     MatchDataNotSet,
     HeaderNotSet,
     BadMatchDataUpdate,
-    MatchAlreadyExpired,
-    MatchAlreadyExhausted,
+    BadMatchUpdate,
     MatchNotExhausted,
-    MatchAutoEnableTooEarly,
-    BadMatchStatus,
-    MatchNotFrozen,
+    RentPerBlockMismatch,
+    MatchNotViable,
 
     // General errors
     BadArgsLength,

@@ -28,7 +28,8 @@ use opticrum_calculator::types::{
 // --- Constants ---
 
 pub const CHANNEL_CAPACITY: u64 = 100_000_000_000;
-pub const ESCROW_BLOCKS: u64 = 43200;
+/// Per-block rent rate in shannons (1 shannon = 10^-8 CKB).
+pub const SHANNONS_PER_BLOCK: u64 = 1000;
 pub const RENT_CAPACITY: u64 = 30_000_000_000;
 pub const MATCH_CREATED_BLOCK: u64 = 1000;
 
@@ -82,8 +83,6 @@ pub fn seed_user_cell_with_lock(
 
 /// Hardcoded compressed secp256k1 pubkey (33 bytes, 0x02 prefix = even Y).
 /// Used as the buyer's fiber_pubkey in OrderArgs for counterparty identification.
-/// No longer derived from a secret key via secp256k1 library — MuSig2 verification
-/// has been removed, so this is just an opaque identifier.
 pub fn fiber_pubkey() -> CompressedPubkey {
     CompressedPubkey::new([0x02u8; 33])
 }
@@ -107,10 +106,6 @@ pub fn random_u64() -> u64 {
 // --- Channel cell seeding ---
 
 /// Seed the Fiber channel CellDep referenced by a match.
-///
-/// Uses dummy lock args since MuSig2 key aggregation verification has been
-/// removed from the contract. The channel identity is verified via outpoint
-/// and Fiber funding type script, not lock args.
 pub fn seed_match_channel_cell(rpc: &mut FakeRpcClient, match_args: &MatchArgs, capacity: u64) {
     seed_channel_cell(rpc, &match_args.channel_outpoint, capacity, [0xABu8; 20]);
 }

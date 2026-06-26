@@ -26,41 +26,11 @@ pub const FIBER_FUNDING_LOCK_ARGS_LEN: usize = 20;
 
 pub const XUDT_AMOUNT_LEN: usize = 16;
 pub const CHANNEL_CAPACITY_LEN: usize = 8;
-pub const ESCROW_BLOCKS_LEN: usize = 8;
-pub const RENT_PER_BLOCK_LEN: usize = 8; // f64
+pub const SHANNONS_PER_BLOCK_LEN: usize = 8; // u64
 pub const BLOCKNUMBER_LEN: usize = 8;
 
-pub const ORDER_DATA_LEN: usize = XUDT_AMOUNT_LEN + CHANNEL_CAPACITY_LEN + ESCROW_BLOCKS_LEN; // 32
-pub const MATCH_STATUS_LEN: usize = 1;
-
-pub const MATCH_DATA_LEN: usize =
-    XUDT_AMOUNT_LEN + RENT_PER_BLOCK_LEN + ESCROW_BLOCKS_LEN + BLOCKNUMBER_LEN + MATCH_STATUS_LEN; // 41
-
-// ---------------------------------------------------------------------------
-// MatchStatus — 1-byte lifecycle state
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MatchStatus {
-    Frozen = 0x00,
-    Enabled = 0x01,
-    Discarded = 0x02,
-}
-
-impl MatchStatus {
-    pub fn from_byte(b: u8) -> Option<Self> {
-        match b {
-            0x00 => Some(Self::Frozen),
-            0x01 => Some(Self::Enabled),
-            0x02 => Some(Self::Discarded),
-            _ => None,
-        }
-    }
-
-    pub fn to_byte(self) -> u8 {
-        self as u8
-    }
-}
+pub const ORDER_DATA_LEN: usize = XUDT_AMOUNT_LEN + CHANNEL_CAPACITY_LEN + SHANNONS_PER_BLOCK_LEN; // 32
+pub const MATCH_DATA_LEN: usize = XUDT_AMOUNT_LEN + SHANNONS_PER_BLOCK_LEN + BLOCKNUMBER_LEN; // 32
 
 // ---------------------------------------------------------------------------
 // ChannelOutpoint — raw 36-byte outpoint (no ckb-types dependency)
@@ -214,23 +184,25 @@ impl OrderArgs {
 // ---------------------------------------------------------------------------
 // OrderData — 32-byte Order Cell data
 // ---------------------------------------------------------------------------
-// Layout: xudt_amount[16] | channel_capacity[8] | escrow_blocks[8]
+// Layout: xudt_amount[16] | channel_capacity[8] | shannons_per_block[8] (u64 LE)
 //
 // Stored as the cell's `data` field, separately from OrderArgs in the lock.
+// `shannons_per_block` is the per-block rent rate in shannons, directly
+// specified by the buyer.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OrderData {
     pub xudt_amount: u128,
     pub channel_capacity: u64,
-    pub escrow_blocks: u64,
+    pub shannons_per_block: u64,
 }
 
 impl OrderData {
-    pub fn new(xudt_amount: u128, channel_capacity: u64, escrow_blocks: u64) -> Self {
+    pub fn new(xudt_amount: u128, channel_capacity: u64, shannons_per_block: u64) -> Self {
         Self {
             xudt_amount,
             channel_capacity,
-            escrow_blocks,
+            shannons_per_block,
         }
     }
 
@@ -245,7 +217,7 @@ impl OrderData {
                     .try_into()
                     .unwrap(),
             ),
-            escrow_blocks: u64::from_le_bytes(
+            shannons_per_block: u64::from_le_bytes(
                 data[XUDT_AMOUNT_LEN + CHANNEL_CAPACITY_LEN..ORDER_DATA_LEN]
                     .try_into()
                     .unwrap(),
@@ -259,7 +231,7 @@ impl OrderData {
         buf[XUDT_AMOUNT_LEN..XUDT_AMOUNT_LEN + CHANNEL_CAPACITY_LEN]
             .copy_from_slice(&self.channel_capacity.to_le_bytes());
         buf[XUDT_AMOUNT_LEN + CHANNEL_CAPACITY_LEN..ORDER_DATA_LEN]
-            .copy_from_slice(&self.escrow_blocks.to_le_bytes());
+            .copy_from_slice(&self.shannons_per_block.to_le_bytes());
         buf
     }
 }
@@ -322,40 +294,31 @@ impl MatchArgs {
 }
 
 // ---------------------------------------------------------------------------
-// MatchData — 41-byte Match Cell data
+// MatchData — 32-byte Match Cell data
 // ---------------------------------------------------------------------------
-// Layout: xudt_amount[16] | rent_per_block[8] | escrow_blocks[8] |
-//         last_extraction_block[8] | status[1]
+// Layout: xudt_amount[16] | shannons_per_block[8] (u64 LE) | last_extraction_block[8]
 //
-// `rent_per_block` is pre-computed at match time as total_rent / escrow_blocks.
-// `escrow_blocks` is stored here so Match verifiers can compute expiry
-// without loading the original Order cell.
-// `status`: 0x00 = Frozen, 0x01 = Enabled, 0x02 = Discarded.
+// `shannons_per_block` is copied from the Order at match time — the per-block
+// linear rent rate in shannons the seller extracts each cycle.
+// `last_extraction_block` is the block number of the most recent extraction
+// (0 means no extraction has occurred yet — the match creation block is used
+// as the baseline).
+//
+// There is no MatchStatus — after matching, the cell is always active.
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MatchData {
     pub xudt_amount: u128,
-    pub rent_per_block: f64,
-    pub escrow_blocks: u64,
+    pub shannons_per_block: u64,
     pub last_extraction_block: u64,
-    pub status: MatchStatus,
 }
 
-impl Eq for MatchData {}
-
 impl MatchData {
-    pub fn new(
-        xudt_amount: u128,
-        rent_per_block: f64,
-        escrow_blocks: u64,
-        status: MatchStatus,
-    ) -> Self {
+    pub fn new(xudt_amount: u128, shannons_per_block: u64) -> Self {
         Self {
             xudt_amount,
-            rent_per_block,
-            escrow_blocks,
+            shannons_per_block,
             last_extraction_block: 0,
-            status,
         }
     }
 
@@ -363,63 +326,28 @@ impl MatchData {
         if data.len() < MATCH_DATA_LEN {
             return Err("Bad Match data length");
         }
-        let status_byte =
-            data[XUDT_AMOUNT_LEN + RENT_PER_BLOCK_LEN + ESCROW_BLOCKS_LEN + BLOCKNUMBER_LEN];
         Ok(Self {
             xudt_amount: u128::from_le_bytes(data[0..XUDT_AMOUNT_LEN].try_into().unwrap()),
-            rent_per_block: f64::from_le_bytes(
-                data[XUDT_AMOUNT_LEN..XUDT_AMOUNT_LEN + RENT_PER_BLOCK_LEN]
-                    .try_into()
-                    .unwrap(),
-            ),
-            escrow_blocks: u64::from_le_bytes(
-                data[XUDT_AMOUNT_LEN + RENT_PER_BLOCK_LEN
-                    ..XUDT_AMOUNT_LEN + RENT_PER_BLOCK_LEN + ESCROW_BLOCKS_LEN]
+            shannons_per_block: u64::from_le_bytes(
+                data[XUDT_AMOUNT_LEN..XUDT_AMOUNT_LEN + SHANNONS_PER_BLOCK_LEN]
                     .try_into()
                     .unwrap(),
             ),
             last_extraction_block: u64::from_le_bytes(
-                data[XUDT_AMOUNT_LEN + RENT_PER_BLOCK_LEN + ESCROW_BLOCKS_LEN
-                    ..XUDT_AMOUNT_LEN + RENT_PER_BLOCK_LEN + ESCROW_BLOCKS_LEN + BLOCKNUMBER_LEN]
+                data[XUDT_AMOUNT_LEN + SHANNONS_PER_BLOCK_LEN..MATCH_DATA_LEN]
                     .try_into()
                     .unwrap(),
             ),
-            status: MatchStatus::from_byte(status_byte).unwrap_or(MatchStatus::Frozen),
         })
     }
 
     pub fn to_bytes(&self) -> [u8; MATCH_DATA_LEN] {
         let mut buf = [0u8; MATCH_DATA_LEN];
         buf[0..XUDT_AMOUNT_LEN].copy_from_slice(&self.xudt_amount.to_le_bytes());
-        buf[XUDT_AMOUNT_LEN..XUDT_AMOUNT_LEN + RENT_PER_BLOCK_LEN]
-            .copy_from_slice(&self.rent_per_block.to_le_bytes());
-        buf[XUDT_AMOUNT_LEN + RENT_PER_BLOCK_LEN
-            ..XUDT_AMOUNT_LEN + RENT_PER_BLOCK_LEN + ESCROW_BLOCKS_LEN]
-            .copy_from_slice(&self.escrow_blocks.to_le_bytes());
-        buf[XUDT_AMOUNT_LEN + RENT_PER_BLOCK_LEN + ESCROW_BLOCKS_LEN
-            ..XUDT_AMOUNT_LEN + RENT_PER_BLOCK_LEN + ESCROW_BLOCKS_LEN + BLOCKNUMBER_LEN]
+        buf[XUDT_AMOUNT_LEN..XUDT_AMOUNT_LEN + SHANNONS_PER_BLOCK_LEN]
+            .copy_from_slice(&self.shannons_per_block.to_le_bytes());
+        buf[XUDT_AMOUNT_LEN + SHANNONS_PER_BLOCK_LEN..MATCH_DATA_LEN]
             .copy_from_slice(&self.last_extraction_block.to_le_bytes());
-        buf[XUDT_AMOUNT_LEN + RENT_PER_BLOCK_LEN + ESCROW_BLOCKS_LEN + BLOCKNUMBER_LEN] =
-            self.status.to_byte();
         buf
-    }
-
-    pub fn good_extraction(
-        &self,
-        new_match_data: &Self,
-        tip_block: u64,
-        xudt_extraction: u128,
-    ) -> bool {
-        // Note: rent_per_block and status are intentionally not compared —
-        // rent_per_block because f64 equality is unreliable across platforms
-        // (hardware vs RISC-V soft-float), and status because it is validated
-        // separately by the caller verifier.
-        if new_match_data.escrow_blocks != self.escrow_blocks
-            || new_match_data.last_extraction_block != tip_block
-            || new_match_data.xudt_amount.saturating_add(xudt_extraction) > self.xudt_amount
-        {
-            return false;
-        }
-        true
     }
 }

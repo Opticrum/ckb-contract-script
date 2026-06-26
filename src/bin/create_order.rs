@@ -14,8 +14,7 @@ use ckb_cinnabar::calculator::{
 };
 use opticrum_calculator::{
     calculator::create_order,
-    config::ABOUT_ONE_DAY_BLOCKS,
-    types::{AnnualYield, CompressedPubkey, OrderArgs, OrderData},
+    types::{CompressedPubkey, OrderArgs, OrderData},
 };
 
 #[tokio::main]
@@ -34,16 +33,17 @@ pub async fn main() -> eyre::Result<()> {
         h256!("0xc97b60038e61afcba164ec5a1c49d4b2e573b2c2166ff03522bd8c6dbf2c7737");
     let order_args = OrderArgs::new(fiber_pubkey, buyer_lock_hash.into());
 
-    // OrderData: xudt_amount (u128, ignored for CKB orders) + channel_capacity + escrow_blocks
+    // OrderData: xudt_amount (0 for CKB orders) + channel_capacity + rent_per_block (scaled)
     let channel_capacity = 20000u64 * ONE_CKB;
-    let escrow_blocks = 10 * ABOUT_ONE_DAY_BLOCKS; // ~10 days
-    let order_data = OrderData::new(0, channel_capacity, escrow_blocks);
+    let shannons_per_block: u64 = 1000; // 1000 shannons per block
+    let order_data = OrderData::new(0, channel_capacity, shannons_per_block);
 
-    // Annual yield percentage (e.g. 5 = 5% APR)
-    let annual_yield = AnnualYield(7);
+    // Total rent capacity to lock up (e.g. for ~100,000 blocks = ~10 days)
+    let rent_capacity = shannons_per_block * 100_000;
     println!(
-        "rent capacity: {:.2} CKB",
-        annual_yield.to_ckb(&order_data) as f64 / ONE_CKB as f64
+        "rent capacity: {:.2} CKB (rent_per_block = {} shannons/block)",
+        rent_capacity as f64 / ONE_CKB as f64,
+        shannons_per_block
     );
 
     let prepare = DefaultInstruction::new(vec![Box::new(AddSecp256k1SighashCellDep {})]);
@@ -51,7 +51,7 @@ pub async fn main() -> eyre::Result<()> {
         buyer_address.clone(),
         &order_args,
         &order_data,
-        annual_yield,
+        rent_capacity,
         None, // no xUDT — pure CKB order
     );
     let balance = balance_and_sign_with_ckb_cli(&buyer_address, 1000, None);
