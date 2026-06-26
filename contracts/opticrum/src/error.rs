@@ -6,7 +6,6 @@ define_errors!(OpticrumError, {
     BadOrderMatch,
     ChannelCellNotInDep,
     ChannelCapacityMismatch,
-    ChannelFundingPubkeyMismatch,
     ChannelCreatedBeforeOrder,
     OrderDataNotSet,
     BadXudtAmount,
@@ -19,6 +18,9 @@ define_errors!(OpticrumError, {
     MatchAlreadyExpired,
     MatchAlreadyExhausted,
     MatchNotExhausted,
+    MatchAutoEnableTooEarly,
+    BadMatchStatus,
+    MatchNotFrozen,
 
     // General errors
     BadArgsLength,

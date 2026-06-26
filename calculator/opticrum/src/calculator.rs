@@ -11,7 +11,7 @@ use ckb_cinnabar_calculator::{
         basic::{
             AddCellDep, AddHeaderDepByBlockNumber, AddHeaderDepByCellDepIndex,
             AddHeaderDepByInputIndex, AddInputCellByAddress, AddInputCellByOutPoint, AddOutputCell,
-            AddOutputCellByInputIndex, AddSecp256k1SighashCellDep, CapacityAdjustment,
+            AddOutputCellByInputIndex, CapacityAdjustment,
         },
         udt::AddXudtCelldep,
         Operation,
@@ -23,7 +23,9 @@ use ckb_cinnabar_calculator::{
 use crate::{
     config::ORDER_TO_MATCH_CAPACITY_RESERVE,
     operation::{opticrum_lock, AddOpticrumContractCelldep},
-    types::{AnnualYield, MatchArgs, MatchData, MatchInfo, OrderArgs, OrderData, OrderInfo},
+    types::{
+        AnnualYield, MatchArgs, MatchData, MatchInfo, MatchStatus, OrderArgs, OrderData, OrderInfo,
+    },
 };
 
 // ---------------------------------------------------------------------------
@@ -218,12 +220,14 @@ pub fn match_order<T: RPC>(
             x.amount,
             x.amount as f64 / escrow_blocks as f64,
             escrow_blocks,
+            MatchStatus::Frozen,
         )
     } else {
         MatchData::new(
             0,
             order_info.ckb_capacity as f64 / escrow_blocks as f64,
             escrow_blocks,
+            MatchStatus::Frozen,
         )
     };
 
@@ -242,8 +246,6 @@ pub fn match_order<T: RPC>(
         Box::new(AddHeaderDepByCellDepIndex {
             celldep_index: usize::MAX,
         }),
-        // For including Secp256k1 pre-context table
-        Box::new(AddSecp256k1SighashCellDep {}),
         // Consume the Order Cell
         Box::new(AddInputCellByOutPoint {
             tx_hash: order_info.order_outpoint.tx_hash.into(),
@@ -267,6 +269,174 @@ pub fn match_order<T: RPC>(
             adjust_capacity: CapacityAdjustment::Add(ORDER_TO_MATCH_CAPACITY_RESERVE),
         }),
     ])
+}
+
+// ---------------------------------------------------------------------------
+// 4a. Confirm Match — buyer enables a Frozen match
+// ---------------------------------------------------------------------------
+
+/// Buyer confirms a Frozen Match, transitioning it to Enabled.
+///
+/// After offline manual verification of the channel (via outpoint), the
+/// buyer calls this to allow the seller to start extracting rent.
+///
+/// # Transaction Structure
+///
+/// ```text
+/// CellDeps:
+///   [0] Opticrum contract code cell
+///
+/// HeaderDeps:
+///   [0] tip block
+///
+/// Inputs:
+///   [0] Frozen Match Cell (consumed)
+///   [1] Buyer's cell (must match buyer_lock_hash)
+///
+/// Outputs:
+///   [0] Enabled Match Cell (capacity unchanged, status=Enabled)
+/// ```
+pub fn confirm_match<T: RPC>(buyer: Address, match_info: MatchInfo) -> Instruction<T> {
+    let mut match_data = match_info.match_data;
+    match_data.status = MatchStatus::Enabled;
+
+    Instruction::new(vec![
+        Box::new(AddOpticrumContractCelldep {}),
+        Box::new(AddInputCellByOutPoint {
+            tx_hash: match_info.match_outpoint.tx_hash.into(),
+            index: match_info.match_outpoint.index,
+            since: None,
+        }),
+        Box::new(AddInputCellByAddress {
+            address: buyer.clone(),
+        }),
+        Box::new(AddOutputCellByInputIndex {
+            input_index: 0,
+            lock_script: None,
+            type_script: None,
+            data: Some(match_data.to_bytes().to_vec()),
+            adjust_capacity: CapacityAdjustment::Keep,
+        }),
+    ])
+}
+
+// ---------------------------------------------------------------------------
+// 4b. Auto-Enable Match — seller activates Frozen match after 3 days
+// ---------------------------------------------------------------------------
+
+/// Seller auto-enables a Frozen Match after the 3-day buyer review window
+/// has elapsed.
+///
+/// # Transaction Structure
+///
+/// ```text
+/// CellDeps:
+///   [0] Opticrum contract code cell
+///
+/// HeaderDeps:
+///   [0] tip block (must be >= match_creation + 3 days)
+///   [1] match creation block
+///
+/// Inputs:
+///   [0] Frozen Match Cell (consumed)
+///   [1] Seller's cell (must match seller_lock_hash)
+///
+/// Outputs:
+///   [0] Enabled Match Cell (capacity unchanged, status=Enabled)
+/// ```
+pub fn auto_enable_match<T: RPC>(
+    seller: Address,
+    match_info: MatchInfo,
+    tip_block: u64,
+) -> Instruction<T> {
+    let mut match_data = match_info.match_data;
+    match_data.status = MatchStatus::Enabled;
+
+    Instruction::new(vec![
+        Box::new(AddOpticrumContractCelldep {}),
+        Box::new(AddHeaderDepByBlockNumber {
+            block_number: tip_block,
+        }),
+        Box::new(AddInputCellByOutPoint {
+            tx_hash: match_info.match_outpoint.tx_hash.into(),
+            index: match_info.match_outpoint.index,
+            since: None,
+        }),
+        Box::new(AddHeaderDepByInputIndex {
+            input_index: usize::MAX,
+        }),
+        Box::new(AddInputCellByAddress {
+            address: seller.clone(),
+        }),
+        Box::new(AddOutputCellByInputIndex {
+            input_index: 0,
+            lock_script: None,
+            type_script: None,
+            data: Some(match_data.to_bytes().to_vec()),
+            adjust_capacity: CapacityAdjustment::Keep,
+        }),
+    ])
+}
+
+// ---------------------------------------------------------------------------
+// 4c. Discard Match — buyer rejects a Frozen match
+// ---------------------------------------------------------------------------
+
+/// Buyer rejects a Frozen Match, extracting all extra capacity (CKB) or
+/// all xUDT (xUDT matches), leaving the cell in Discarded state for the
+/// seller to destroy.
+///
+/// # Transaction Structure
+///
+/// ```text
+/// CellDeps:
+///   [0] Opticrum contract code cell
+///
+/// Inputs:
+///   [0] Frozen Match Cell (consumed)
+///   [1] Buyer's cell (must match buyer_lock_hash)
+///
+/// Outputs:
+///   [0] Discarded Match Cell (status=Discarded, xudt_amount=0 for xUDT matches)
+///   [1] Buyer change cell (absorbs extracted capacity / xUDT)
+/// ```
+pub fn discard_match<T: RPC>(buyer: Address, match_info: MatchInfo) -> Instruction<T> {
+    let mut match_data = match_info.match_data;
+    match_data.status = MatchStatus::Discarded;
+
+    let mut operations: Vec<Box<dyn Operation<T>>> = vec![
+        Box::new(AddOpticrumContractCelldep {}),
+        Box::new(AddInputCellByOutPoint {
+            tx_hash: match_info.match_outpoint.tx_hash.into(),
+            index: match_info.match_outpoint.index,
+            since: None,
+        }),
+        Box::new(AddInputCellByAddress {
+            address: buyer.clone(),
+        }),
+        Box::new(AddOutputCellByInputIndex {
+            input_index: 0,
+            lock_script: None,
+            type_script: None,
+            data: Some(match_data.to_bytes().to_vec()),
+            adjust_capacity: CapacityAdjustment::BuildExact,
+        }),
+    ];
+
+    if let Some(ref x) = match_info.xudt {
+        operations.push(Box::new(AddXudtCelldep {}));
+        // Return xUDT to buyer
+        operations.push(Box::new(AddOutputCell {
+            lock_script: buyer.into(),
+            type_script: Some(x.type_script.clone().into()),
+            data: x.amount.to_le_bytes().to_vec(),
+            capacity: 0,
+            absolute_capacity: false,
+            type_id: false,
+        }));
+    }
+
+    Instruction::new(operations)
 }
 
 // ---------------------------------------------------------------------------
@@ -427,6 +597,12 @@ pub fn destroy_match<T: RPC>(
     match_info: MatchInfo,
     tip_block: u64,
 ) -> Instruction<T> {
+    assert_ne!(
+        match_info.match_data.status,
+        MatchStatus::Frozen,
+        "Cannot destroy a Frozen match"
+    );
+
     let mut operations: Vec<Box<dyn Operation<T>>> = vec![
         Box::new(AddOpticrumContractCelldep {}),
         Box::new(AddHeaderDepByBlockNumber {

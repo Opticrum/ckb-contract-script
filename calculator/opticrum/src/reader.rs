@@ -116,7 +116,6 @@ fn parse_match_cell(cell: &LiveCell) -> eyre::Result<MatchInfo> {
     let match_data = MatchData::from_slice(raw_data).map_err(|e| eyre!("Bad Match data: {}", e))?;
 
     let ckb_capacity = real_rent_capacity(&cell.output, raw_data)?;
-
     let xudt = cell.output.type_().to_opt().map(|type_script| Xudt {
         amount: match_data.xudt_amount,
         type_script,
@@ -151,8 +150,8 @@ pub async fn scan_orders<T: RPC>(rpc: &T) -> eyre::Result<Vec<OrderInfo>> {
     while let Some(batch) = iter.next_batch(50).await? {
         for cell in batch {
             let live: LiveCell = cell.into();
-            if let Ok(order) = parse_order_cell(&live) {
-                orders.push(order);
+            if let Ok(value) = parse_order_cell(&live) {
+                orders.push(value);
             }
         }
     }
@@ -174,7 +173,9 @@ pub async fn scan_matches<T: RPC>(rpc: &T) -> eyre::Result<Vec<MatchInfo>> {
     while let Some(batch) = iter.next_batch(50).await? {
         for cell in batch {
             let live: LiveCell = cell.into();
-            matches.push(parse_match_cell(&live)?);
+            if let Ok(value) = parse_match_cell(&live) {
+                matches.push(value);
+            }
         }
     }
 

@@ -10,6 +10,7 @@ use crate::{
     utils::{check_channel_existence, has_lock_in_inputs},
     Branch, Context,
 };
+use opticrum_protocol::MatchStatus;
 
 /// Verifies that the seller correctly extracts rent from a Match Cell.
 ///
@@ -32,9 +33,14 @@ impl Verification<Context> for MatchExtract {
     fn verify(&mut self, name: &str, ctx: &mut Context) -> Result<Option<&str>> {
         debug!("Entering [{name}]");
 
-        let Branch::Match(match_args, _) = &ctx.old_state.branch else {
+        let Branch::Match(match_args, match_data) = &ctx.old_state.branch else {
             return Err(OpticrumError::UnexpectedBranch.into());
         };
+
+        // 0. Must be Enabled to extract rent
+        if match_data.status != MatchStatus::Enabled {
+            return Err(OpticrumError::BadMatchStatus.into());
+        }
 
         // 1. Verify channel cell still exists in CellDeps (existence only —
         //    capacity/xUDT amount was already verified at match time).

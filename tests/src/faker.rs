@@ -16,7 +16,7 @@ use ckb_cinnabar_calculator::{
     },
     simulation::{
         always_success_script, fake_header_view, fake_outpoint, AddFakeAlwaysSuccessCelldep,
-        AddFakeContractCelldep, AddFakeContractCelldepByName, FakeRpcClient,
+        AddFakeContractCelldepByName, FakeRpcClient,
     },
     skeleton::CellOutputEx,
     TransactionCalculator,
@@ -49,21 +49,43 @@ pub fn user_lock_hash() -> [u8; 32] {
     hash.copy_from_slice(&script_hash);
     hash
 }
-pub fn fiber_pubkey() -> CompressedPubkey {
-    keypair_from([0x11; 32])
-}
-pub fn seller_fiber_pubkey() -> CompressedPubkey {
-    keypair_from([0x22; 32])
-}
-pub fn wrong_seller_fiber_pubkey() -> CompressedPubkey {
-    keypair_from([0x33; 32])
+
+/// Distinct seller lock hash for tests where buyer ≠ seller auth matters.
+pub fn seller_lock_hash() -> [u8; 32] {
+    let mut hash = [0u8; 32];
+    let script_hash = ckb_cinnabar_calculator::re_exports::ckb_hash::blake2b_256(
+        always_success_script(vec![0x01]).as_slice(),
+    );
+    hash.copy_from_slice(&script_hash);
+    hash
 }
 
-fn keypair_from(secret: [u8; 32]) -> CompressedPubkey {
-    use secp256k1::{PublicKey, Secp256k1, SecretKey};
-    let secp = Secp256k1::new();
-    let sk = SecretKey::from_slice(&secret).expect("valid secret");
-    CompressedPubkey::new(PublicKey::from_secret_key(&secp, &sk).serialize())
+/// Seed a user cell with a specific lock (for seller vs buyer distinction).
+pub fn seed_user_cell_with_lock(
+    rpc: &mut FakeRpcClient,
+    capacity: u64,
+    lock_args: Vec<u8>,
+) -> Address {
+    let lock = always_success_script(lock_args);
+    let cell = CellOutputEx::new_from_scripts(
+        lock.clone(),
+        None,
+        vec![],
+        Some(Capacity::shannons(capacity)),
+    )
+    .expect("build user cell");
+    let header = fake_header_view(1, random_u64(), random_u64());
+    rpc.insert_fake_cell(fake_outpoint(), cell, Some(header));
+    let payload = AddressPayload::from(lock);
+    Address::new(ckb_cinnabar_calculator::rpc::Network::Fake, payload)
+}
+
+/// Hardcoded compressed secp256k1 pubkey (33 bytes, 0x02 prefix = even Y).
+/// Used as the buyer's fiber_pubkey in OrderArgs for counterparty identification.
+/// No longer derived from a secret key via secp256k1 library — MuSig2 verification
+/// has been removed, so this is just an opaque identifier.
+pub fn fiber_pubkey() -> CompressedPubkey {
+    CompressedPubkey::new([0x02u8; 33])
 }
 
 /// Must stay in sync with `FIBER_FUNDING_TYPE_ID_MOCK` in the contract.
@@ -82,56 +104,15 @@ pub fn random_u64() -> u64 {
     u64::from_le_bytes(hash[..8].try_into().unwrap())
 }
 
-// --- MuSig2 helpers ---
-
-/// Fiber funding lock args: blake160(x-only MuSig2 aggregated key).
-pub fn funding_lock_args(buyer: &CompressedPubkey, seller: &CompressedPubkey) -> [u8; 20] {
-    let xonly = aggregate_funding_keys_xonly(buyer, seller).unwrap();
-    let hash = ckb_cinnabar_calculator::re_exports::ckb_hash::blake2b_256(xonly);
-    let mut args = [0u8; 20];
-    args.copy_from_slice(&hash[..20]);
-    args
-}
-
-/// BIP-327 MuSig2* key aggregation via the canonical `musig2` crate.
-///
-/// The contract binary calls our C function (`compute_musig2_key_aggregation_xonly`);
-/// this helper produces the expected result using the `musig2` reference
-/// implementation, so passing tests mean the C function ≡ musig2.
-pub fn aggregate_funding_keys_xonly(
-    pk_a: &CompressedPubkey,
-    pk_b: &CompressedPubkey,
-) -> Result<[u8; 32], &'static str> {
-    use musig2::KeyAggContext;
-    use secp256k1::PublicKey;
-
-    let key_a = PublicKey::from_slice(pk_a.as_bytes()).map_err(|_| "bad pubkey")?;
-    let key_b = PublicKey::from_slice(pk_b.as_bytes()).map_err(|_| "bad pubkey")?;
-
-    let (k1, k2) = if pk_a.as_bytes() <= pk_b.as_bytes() {
-        (key_a, key_b)
-    } else {
-        (key_b, key_a)
-    };
-
-    let ctx = KeyAggContext::new([k1, k2]).map_err(|_| "keyagg")?;
-    let agg: PublicKey = ctx.aggregated_pubkey();
-    Ok(agg.x_only_public_key().0.serialize())
-}
+// --- Channel cell seeding ---
 
 /// Seed the Fiber channel CellDep referenced by a match.
-pub fn seed_match_channel_cell(
-    rpc: &mut FakeRpcClient,
-    order_args: &OrderArgs,
-    match_args: &MatchArgs,
-    capacity: u64,
-) {
-    seed_channel_cell(
-        rpc,
-        &match_args.channel_outpoint,
-        capacity,
-        funding_lock_args(&order_args.fiber_pubkey, &match_args.fiber_pubkey),
-    );
+///
+/// Uses dummy lock args since MuSig2 key aggregation verification has been
+/// removed from the contract. The channel identity is verified via outpoint
+/// and Fiber funding type script, not lock args.
+pub fn seed_match_channel_cell(rpc: &mut FakeRpcClient, match_args: &MatchArgs, capacity: u64) {
+    seed_channel_cell(rpc, &match_args.channel_outpoint, capacity, [0xABu8; 20]);
 }
 
 // --- Address / Lock Script builders ---
@@ -151,23 +132,12 @@ fn build_opticrum_lock(args: Vec<u8>, skeleton: &TransactionSkeleton) -> eyre::R
 
 /// Build a reusable skeleton pre-loaded with all contract celldeps.
 pub async fn celldeps_prepared_skeleton(rpc: &FakeRpcClient) -> eyre::Result<TransactionSkeleton> {
-    let secp256k1_data_path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../secp256k1/ckb-lib-secp256k1/build/secp256k1_data"
-    );
-    let secp256k1_data = std::fs::read(secp256k1_data_path)?;
-
     let prepare = Instruction::<FakeRpcClient>::new(vec![
         Box::new(AddFakeAlwaysSuccessCelldep {}),
         Box::new(AddFakeContractCelldepByName {
             contract: "opticrum".to_string(),
             type_id_args: Some(H256::default()),
             contract_binary_path: "../build/release".to_string(),
-        }),
-        Box::new(AddFakeContractCelldep {
-            name: "secp256k1_data".to_string(),
-            contract_data: secp256k1_data,
-            type_id_args: None,
         }),
     ]);
     let (skeleton, _) = TransactionCalculator::default()
@@ -192,7 +162,7 @@ pub fn seed_channel_cell(
     rpc: &mut FakeRpcClient,
     outpoint: &OutPoint,
     capacity: u64,
-    funding_lock_args: [u8; 20],
+    lock_args: [u8; 20],
 ) {
     let channel_type = Script::new_builder()
         .code_hash(H256([0xCCu8; 32]).pack())
@@ -202,7 +172,7 @@ pub fn seed_channel_cell(
     let lock = Script::new_builder()
         .code_hash(H256(CONTRACT_MOCK).pack())
         .hash_type(ScriptHashType::Type.into())
-        .args(Bytes::copy_from_slice(&funding_lock_args).pack())
+        .args(Bytes::copy_from_slice(&lock_args).pack())
         .build();
     let cell = CellOutputEx::new_from_scripts(
         lock,
@@ -224,7 +194,7 @@ pub fn seed_channel_cell_at(
     rpc: &mut FakeRpcClient,
     outpoint: &OutPoint,
     capacity: u64,
-    funding_lock_args: [u8; 20],
+    lock_args: [u8; 20],
     block_number: u64,
 ) {
     let channel_type = Script::new_builder()
@@ -235,7 +205,7 @@ pub fn seed_channel_cell_at(
     let lock = Script::new_builder()
         .code_hash(H256(CONTRACT_MOCK).pack())
         .hash_type(ScriptHashType::Type.into())
-        .args(Bytes::copy_from_slice(&funding_lock_args).pack())
+        .args(Bytes::copy_from_slice(&lock_args).pack())
         .build();
     let cell = CellOutputEx::new_from_scripts(
         lock,

@@ -21,7 +21,6 @@ use crate::{
     error::OpticrumError, FIBER_FUNDING_TYPE_ID_MAINNET, FIBER_FUNDING_TYPE_ID_MOCK,
     FIBER_FUNDING_TYPE_ID_TESTNET,
 };
-// Key aggregation now uses C FFI (secp256k1 crate) instead of Rust keyagg module
 
 // Re-export all protocol types from the canonical crate
 pub use opticrum_protocol::*;
@@ -84,6 +83,7 @@ fn is_fiber_funding_contract(hash: &[u8; 32]) -> bool {
 ///
 /// When the mock type hash is not the all-zero wildcard, also requires a Fiber
 /// funding type script on the cell.
+#[allow(dead_code)]
 pub fn find_channel_celldep_index(channel_outpoint: &OutPoint) -> Option<usize> {
     let tx = load_transaction().ok()?;
     for (i, dep) in tx.raw().cell_deps().into_iter().enumerate() {
@@ -99,31 +99,6 @@ pub fn find_channel_celldep_index(channel_outpoint: &OutPoint) -> Option<usize> 
         return Some(i);
     }
     None
-}
-
-/// Verify that the channel CellDep lock args match the MuSig2-aggregated funding key.
-///
-/// Fiber funding cells store `blake160(x_only_aggregated_pubkey)` in lock args.
-pub fn verify_channel_funding_pubkey(
-    channel_outpoint: &OutPoint,
-    buyer_pk: &CompressedPubkey,
-    seller_pk: &CompressedPubkey,
-) -> bool {
-    let Some(i) = find_channel_celldep_index(channel_outpoint) else {
-        return false;
-    };
-    let Ok(lock) = load_cell_lock(i, Source::CellDep) else {
-        return false;
-    };
-    let channel_args = lock.args().raw_data().to_vec();
-    let Ok(xonly) =
-        secp256k1::compute_musig2_key_aggregation_xonly(buyer_pk.as_bytes(), seller_pk.as_bytes())
-    else {
-        return false;
-    };
-    let hash = ckb_hash::blake2b_256(xonly);
-    channel_args.len() == FIBER_FUNDING_LOCK_ARGS_LEN
-        && channel_args.as_slice() == &hash[..FIBER_FUNDING_LOCK_ARGS_LEN]
 }
 
 /// Find a cell in CellDeps matching the given channel outpoint and type.

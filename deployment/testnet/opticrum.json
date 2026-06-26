@@ -103,5 +103,20 @@
     "type_id": "0x1f8452818672fbb60f39c72e2d30dadd1814f322dfc21bf552784d83054f0247",
     "type_id_args": "0x3b009c195d6dd5617d687a0387bccefae99eac8a1a5e393bf2563a3afb7feb49",
     "__comment": null
+  },
+  {
+    "name": "opticrum",
+    "date": "2026-06-26T06:21:01.338253+00:00",
+    "operation": "migrate",
+    "version": "v0.3.0",
+    "tx_hash": "0x3a0a18a8da92f0f1f5f0327961bc436b9c0ac81d859f2bbd02b5ded5036b783b",
+    "out_index": 0,
+    "data_hash": "0xaf5f004a04ba74c1895e0e0125709ab48ddeae6d41ce2f8af76daefe55157e32",
+    "occupied_capacity": 8528600000000,
+    "payer_address": "ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqv5puz2ee96nuh9nmc6rtm0n8v7agju4rgdmxlnk",
+    "contract_owner_address": "ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqv5puz2ee96nuh9nmc6rtm0n8v7agju4rgdmxlnk",
+    "type_id": "0x1f8452818672fbb60f39c72e2d30dadd1814f322dfc21bf552784d83054f0247",
+    "type_id_args": "0x3b009c195d6dd5617d687a0387bccefae99eac8a1a5e393bf2563a3afb7feb49",
+    "__comment": null
   }
 ]

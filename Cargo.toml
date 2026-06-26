@@ -6,7 +6,6 @@ members = [
     "calculator/opticrum",
     "opticrum-protocol",
     "tests",
-    "secp256k1",
 ]
 
 [workspace.dependencies]
@@ -36,6 +35,10 @@ name = "scan_orders"
 path = "src/bin/scan_orders.rs"
 
 [[bin]]
+name = "scan_matches"
+path = "src/bin/scan_matches.rs"
+
+[[bin]]
 name = "match_order"
 path = "src/bin/match_order.rs"
 
@@ -43,10 +46,15 @@ path = "src/bin/match_order.rs"
 name = "extract_rent"
 path = "src/bin/extract_rent.rs"
 
+[[bin]]
+name = "review_match"
+path = "src/bin/review_match.rs"
+
 [dependencies]
 ckb-cinnabar = { workspace = true }
 opticrum-calculator = { path = "calculator/opticrum" }
 hex = "0.4.3"
+dotenvy = "0.15"
 
 [profile.release]
 codegen-units = 1

@@ -8,9 +8,9 @@ use ckb_cinnabar_calculator::{
     simulation::{FakeRpcClient, TransactionSimulator, DEFUALT_MAX_CYCLES},
 };
 use opticrum_calculator::{
-    cancel_order, create_order, destroy_match, extract_rent, match_order, scan_matches,
-    scan_orders,
-    types::{AnnualYield, MatchArgs, MatchData, OrderArgs, OrderData},
+    auto_enable_match, cancel_order, confirm_match, create_order, destroy_match, discard_match,
+    extract_rent, match_order, scan_matches, scan_orders,
+    types::{AnnualYield, MatchArgs, MatchData, MatchStatus, OrderArgs, OrderData},
 };
 
 use crate::faker;
@@ -84,7 +84,6 @@ async fn test_match_order() -> eyre::Result<()> {
         order_args.clone(),
         faker::channel_outpoint(),
         faker::user_lock_hash(),
-        faker::seller_fiber_pubkey(),
     );
 
     // Use _at variant with explicit block so Source::Input can resolve the header
@@ -100,7 +99,7 @@ async fn test_match_order() -> eyre::Result<()> {
         &mut rpc,
         &match_args.channel_outpoint,
         faker::CHANNEL_CAPACITY,
-        faker::funding_lock_args(&order_args.fiber_pubkey, &match_args.fiber_pubkey),
+        [0xABu8; 20],
         faker::CHANNEL_CREATED_BLOCK,
     );
 
@@ -113,6 +112,173 @@ async fn test_match_order() -> eyre::Result<()> {
         .async_verify(&rpc, vec![instruction], DEFUALT_MAX_CYCLES)
         .await?;
     println!("match_order cycle: {}", cycle);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle: Confirm Match (Frozen → Enabled, buyer)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_confirm_match() -> eyre::Result<()> {
+    let mut rpc = FakeRpcClient::default();
+    let skeleton = faker::celldeps_prepared_skeleton(&rpc).await?;
+    faker::seed_user_cell(&mut rpc, 200_000_000_000);
+
+    let buyer = faker::fake_address();
+    let order_args = OrderArgs::new(faker::fiber_pubkey(), faker::user_lock_hash());
+    let match_args = MatchArgs::new(
+        order_args,
+        faker::channel_outpoint(),
+        faker::user_lock_hash(),
+    );
+    let rent_per_block = faker::RENT_CAPACITY as f64 / faker::ESCROW_BLOCKS as f64;
+    let match_data = MatchData::new(0, rent_per_block, faker::ESCROW_BLOCKS, MatchStatus::Frozen);
+
+    let packed = faker::seed_match_cell(
+        &mut rpc,
+        &skeleton,
+        &match_args,
+        &match_data,
+        faker::RENT_CAPACITY,
+        faker::MATCH_CREATED_BLOCK,
+    )?;
+    faker::seed_match_channel_cell(&mut rpc, &match_args, faker::CHANNEL_CAPACITY);
+
+    let match_info = faker::to_match_info(&packed, match_args, match_data);
+    let instruction = confirm_match(buyer, match_info);
+
+    let cycle = TransactionSimulator::default()
+        .skeleton(skeleton)
+        .link_cell_to_header(rpc.get_outpoint_to_headers())
+        .async_verify(&rpc, vec![instruction], DEFUALT_MAX_CYCLES)
+        .await?;
+    println!("confirm_match cycle: {}", cycle);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle: Auto-Enable Match (Frozen → Enabled, seller, 3-day proof)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_auto_enable_match() -> eyre::Result<()> {
+    let mut rpc = FakeRpcClient::default();
+    let skeleton = faker::celldeps_prepared_skeleton(&rpc).await?;
+    let seller = faker::seed_user_cell_with_lock(&mut rpc, 200_000_000_000, vec![0x01]);
+
+    let order_args = OrderArgs::new(faker::fiber_pubkey(), faker::user_lock_hash());
+    let match_args = MatchArgs::new(
+        order_args,
+        faker::channel_outpoint(),
+        faker::seller_lock_hash(),
+    );
+    let rent_per_block = faker::RENT_CAPACITY as f64 / faker::ESCROW_BLOCKS as f64;
+    let match_data = MatchData::new(0, rent_per_block, faker::ESCROW_BLOCKS, MatchStatus::Frozen);
+
+    let packed = faker::seed_match_cell(
+        &mut rpc,
+        &skeleton,
+        &match_args,
+        &match_data,
+        faker::RENT_CAPACITY,
+        faker::MATCH_CREATED_BLOCK,
+    )?;
+
+    // Tip block is 3+ days beyond match creation
+    let tip = faker::MATCH_CREATED_BLOCK + 30_000 + 100;
+    faker::seed_header(&mut rpc, tip, 1000);
+
+    let match_info = faker::to_match_info(&packed, match_args, match_data);
+    let instruction = auto_enable_match(seller, match_info, tip);
+
+    let cycle = TransactionSimulator::default()
+        .skeleton(skeleton)
+        .link_cell_to_header(rpc.get_outpoint_to_headers())
+        .async_verify(&rpc, vec![instruction], DEFUALT_MAX_CYCLES)
+        .await?;
+    println!("auto_enable_match cycle: {}", cycle);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_auto_enable_rejected_too_early() -> eyre::Result<()> {
+    let mut rpc = FakeRpcClient::default();
+    let skeleton = faker::celldeps_prepared_skeleton(&rpc).await?;
+    let seller = faker::seed_user_cell_with_lock(&mut rpc, 200_000_000_000, vec![0x01]);
+
+    let order_args = OrderArgs::new(faker::fiber_pubkey(), faker::user_lock_hash());
+    let match_args = MatchArgs::new(
+        order_args,
+        faker::channel_outpoint(),
+        faker::seller_lock_hash(),
+    );
+    let rent_per_block = faker::RENT_CAPACITY as f64 / faker::ESCROW_BLOCKS as f64;
+    let match_data = MatchData::new(0, rent_per_block, faker::ESCROW_BLOCKS, MatchStatus::Frozen);
+
+    let packed = faker::seed_match_cell(
+        &mut rpc,
+        &skeleton,
+        &match_args,
+        &match_data,
+        faker::RENT_CAPACITY,
+        faker::MATCH_CREATED_BLOCK,
+    )?;
+
+    // Tip block is only 100 blocks after match creation (well under 3 days)
+    let tip = faker::MATCH_CREATED_BLOCK + 100;
+    faker::seed_header(&mut rpc, tip, 1000);
+
+    let match_info = faker::to_match_info(&packed, match_args, match_data);
+    let instruction = auto_enable_match(seller, match_info, tip);
+
+    let result = TransactionSimulator::default()
+        .skeleton(skeleton)
+        .link_cell_to_header(rpc.get_outpoint_to_headers())
+        .async_verify(&rpc, vec![instruction], DEFUALT_MAX_CYCLES)
+        .await;
+    assert!(result.is_err(), "Auto-enable too early should fail");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle: Discard Match (Frozen → Discarded, buyer)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_discard_match() -> eyre::Result<()> {
+    let mut rpc = FakeRpcClient::default();
+    let skeleton = faker::celldeps_prepared_skeleton(&rpc).await?;
+    faker::seed_user_cell(&mut rpc, 200_000_000_000);
+
+    let buyer = faker::fake_address();
+    let order_args = OrderArgs::new(faker::fiber_pubkey(), faker::user_lock_hash());
+    let match_args = MatchArgs::new(
+        order_args,
+        faker::channel_outpoint(),
+        faker::user_lock_hash(),
+    );
+    let rent_per_block = faker::RENT_CAPACITY as f64 / faker::ESCROW_BLOCKS as f64;
+    let match_data = MatchData::new(0, rent_per_block, faker::ESCROW_BLOCKS, MatchStatus::Frozen);
+
+    let packed = faker::seed_match_cell(
+        &mut rpc,
+        &skeleton,
+        &match_args,
+        &match_data,
+        faker::RENT_CAPACITY,
+        faker::MATCH_CREATED_BLOCK,
+    )?;
+
+    let match_info = faker::to_match_info(&packed, match_args, match_data);
+    let instruction = discard_match(buyer, match_info);
+
+    let cycle = TransactionSimulator::default()
+        .skeleton(skeleton)
+        .link_cell_to_header(rpc.get_outpoint_to_headers())
+        .async_verify(&rpc, vec![instruction], DEFUALT_MAX_CYCLES)
+        .await?;
+    println!("discard_match cycle: {}", cycle);
     Ok(())
 }
 
@@ -132,10 +298,15 @@ async fn test_extract_rent() -> eyre::Result<()> {
         order_args.clone(),
         faker::channel_outpoint(),
         faker::user_lock_hash(),
-        faker::seller_fiber_pubkey(),
     );
     let rent_per_block = faker::RENT_CAPACITY as f64 / faker::ESCROW_BLOCKS as f64;
-    let match_data = MatchData::new(0, rent_per_block, faker::ESCROW_BLOCKS);
+    // Seed as Enabled so extraction is allowed
+    let match_data = MatchData::new(
+        0,
+        rent_per_block,
+        faker::ESCROW_BLOCKS,
+        MatchStatus::Enabled,
+    );
 
     let packed = faker::seed_match_cell(
         &mut rpc,
@@ -145,7 +316,7 @@ async fn test_extract_rent() -> eyre::Result<()> {
         faker::RENT_CAPACITY,
         faker::MATCH_CREATED_BLOCK,
     )?;
-    faker::seed_match_channel_cell(&mut rpc, &order_args, &match_args, faker::CHANNEL_CAPACITY);
+    faker::seed_match_channel_cell(&mut rpc, &match_args, faker::CHANNEL_CAPACITY);
     let tip = faker::MATCH_CREATED_BLOCK + 100;
     faker::seed_header(&mut rpc, tip, 1000);
 
@@ -162,6 +333,47 @@ async fn test_extract_rent() -> eyre::Result<()> {
 }
 
 #[tokio::test]
+async fn test_cannot_extract_from_frozen() -> eyre::Result<()> {
+    let mut rpc = FakeRpcClient::default();
+    let skeleton = faker::celldeps_prepared_skeleton(&rpc).await?;
+    faker::seed_user_cell(&mut rpc, 200_000_000_000);
+
+    let seller = faker::fake_address();
+    let order_args = OrderArgs::new(faker::fiber_pubkey(), faker::user_lock_hash());
+    let match_args = MatchArgs::new(
+        order_args,
+        faker::channel_outpoint(),
+        faker::user_lock_hash(),
+    );
+    let rent_per_block = faker::RENT_CAPACITY as f64 / faker::ESCROW_BLOCKS as f64;
+    // Frozen status — extract should fail
+    let match_data = MatchData::new(0, rent_per_block, faker::ESCROW_BLOCKS, MatchStatus::Frozen);
+
+    let packed = faker::seed_match_cell(
+        &mut rpc,
+        &skeleton,
+        &match_args,
+        &match_data,
+        faker::RENT_CAPACITY,
+        faker::MATCH_CREATED_BLOCK,
+    )?;
+    faker::seed_match_channel_cell(&mut rpc, &match_args, faker::CHANNEL_CAPACITY);
+    let tip = faker::MATCH_CREATED_BLOCK + 100;
+    faker::seed_header(&mut rpc, tip, 1000);
+
+    let match_info = faker::to_match_info(&packed, match_args, match_data);
+    let instruction = extract_rent(seller, match_info, tip);
+
+    let result = TransactionSimulator::default()
+        .skeleton(skeleton)
+        .link_cell_to_header(rpc.get_outpoint_to_headers())
+        .async_verify(&rpc, vec![instruction], DEFUALT_MAX_CYCLES)
+        .await;
+    assert!(result.is_err(), "Extract from Frozen should fail");
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_destroy_match() -> eyre::Result<()> {
     let mut rpc = FakeRpcClient::default();
     let skeleton = faker::celldeps_prepared_skeleton(&rpc).await?;
@@ -173,10 +385,15 @@ async fn test_destroy_match() -> eyre::Result<()> {
         order_args,
         faker::channel_outpoint(),
         faker::user_lock_hash(),
-        faker::seller_fiber_pubkey(),
     );
     let rent_per_block = faker::RENT_CAPACITY as f64 / faker::ESCROW_BLOCKS as f64;
-    let match_data = MatchData::new(0, rent_per_block, faker::ESCROW_BLOCKS);
+    // Enabled + exhausted (tip well past escrow)
+    let match_data = MatchData::new(
+        0,
+        rent_per_block,
+        faker::ESCROW_BLOCKS,
+        MatchStatus::Enabled,
+    );
 
     let packed = faker::seed_match_cell(
         &mut rpc,
@@ -199,6 +416,104 @@ async fn test_destroy_match() -> eyre::Result<()> {
         .async_verify(&rpc, vec![instruction], DEFUALT_MAX_CYCLES)
         .await?;
     println!("destroy_match cycle: {}", cycle);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_cannot_destroy_frozen() -> eyre::Result<()> {
+    let mut rpc = FakeRpcClient::default();
+    let skeleton = faker::celldeps_prepared_skeleton(&rpc).await?;
+    faker::seed_user_cell(&mut rpc, 200_000_000_000);
+
+    let claimant = faker::fake_address();
+    let order_args = OrderArgs::new(faker::fiber_pubkey(), faker::user_lock_hash());
+    let match_args = MatchArgs::new(
+        order_args,
+        faker::channel_outpoint(),
+        faker::user_lock_hash(),
+    );
+    let rent_per_block = faker::RENT_CAPACITY as f64 / faker::ESCROW_BLOCKS as f64;
+    let match_data = MatchData::new(0, rent_per_block, faker::ESCROW_BLOCKS, MatchStatus::Frozen);
+
+    let packed = faker::seed_match_cell(
+        &mut rpc,
+        &skeleton,
+        &match_args,
+        &match_data,
+        faker::RENT_CAPACITY,
+        faker::MATCH_CREATED_BLOCK,
+    )?;
+    let tip = faker::MATCH_CREATED_BLOCK + 100;
+    faker::seed_header(&mut rpc, tip, 1000);
+
+    let match_info = faker::to_match_info(&packed, match_args, match_data);
+    // Destroy from Frozen should fail at calculator level
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        destroy_match::<FakeRpcClient>(claimant, match_info, tip)
+    }));
+    assert!(
+        result.is_err(),
+        "Destroy from Frozen should panic (assertion)"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_discarded_only_seller_can_destroy() -> eyre::Result<()> {
+    let mut rpc = FakeRpcClient::default();
+    let skeleton = faker::celldeps_prepared_skeleton(&rpc).await?;
+    let seller = faker::seed_user_cell_with_lock(&mut rpc, 200_000_000_000, vec![0x01]);
+    faker::seed_user_cell(&mut rpc, 200_000_000_000); // buyer cell
+    let buyer = faker::fake_address();
+
+    let order_args = OrderArgs::new(faker::fiber_pubkey(), faker::user_lock_hash());
+    let match_args = MatchArgs::new(
+        order_args,
+        faker::channel_outpoint(),
+        faker::seller_lock_hash(),
+    );
+    let rent_per_block = faker::RENT_CAPACITY as f64 / faker::ESCROW_BLOCKS as f64;
+    // Discarded status
+    let match_data = MatchData::new(
+        0,
+        rent_per_block,
+        faker::ESCROW_BLOCKS,
+        MatchStatus::Discarded,
+    );
+
+    let packed = faker::seed_match_cell(
+        &mut rpc,
+        &skeleton,
+        &match_args,
+        &match_data,
+        faker::RENT_CAPACITY,
+        faker::MATCH_CREATED_BLOCK,
+    )?;
+    let tip = faker::MATCH_CREATED_BLOCK + 100;
+    faker::seed_header(&mut rpc, tip, 1000);
+
+    // Buyer tries to destroy discarded — should fail (only seller can)
+    let match_info = faker::to_match_info(&packed, match_args.clone(), match_data.clone());
+    let instruction = destroy_match(buyer, match_info, tip);
+    let result = TransactionSimulator::default()
+        .skeleton(skeleton.clone())
+        .link_cell_to_header(rpc.get_outpoint_to_headers())
+        .async_verify(&rpc, vec![instruction], DEFUALT_MAX_CYCLES)
+        .await;
+    assert!(
+        result.is_err(),
+        "Buyer destroying Discarded match should fail"
+    );
+
+    // Seller destroys discarded — should succeed
+    let match_info2 = faker::to_match_info(&packed, match_args, match_data);
+    let instruction2 = destroy_match(seller, match_info2, tip);
+    let cycle = TransactionSimulator::default()
+        .skeleton(skeleton)
+        .link_cell_to_header(rpc.get_outpoint_to_headers())
+        .async_verify(&rpc, vec![instruction2], DEFUALT_MAX_CYCLES)
+        .await?;
+    println!("destroy_discarded_match (seller) cycle: {}", cycle);
     Ok(())
 }
 
@@ -232,9 +547,8 @@ async fn test_scan_matches() -> eyre::Result<()> {
         OrderArgs::new(faker::fiber_pubkey(), faker::user_lock_hash()),
         faker::channel_outpoint(),
         faker::user_lock_hash(),
-        faker::seller_fiber_pubkey(),
     );
-    let match_data = MatchData::new(0, 1.0, faker::ESCROW_BLOCKS);
+    let match_data = MatchData::new(0, 1.0, faker::ESCROW_BLOCKS, MatchStatus::Frozen);
     faker::seed_match_cell(
         &mut rpc,
         &skeleton,

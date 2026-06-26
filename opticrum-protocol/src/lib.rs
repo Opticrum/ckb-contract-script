@@ -20,8 +20,7 @@ pub const LOCK_HASH_LEN: usize = 32;
 
 pub const ORDER_ARGS_LEN: usize = FIBER_PUBKEY_LEN + LOCK_HASH_LEN; // 65
 pub const CHANNEL_OUTPOINT_LEN: usize = 32 + 4; // 36: tx_hash[32] + index[4] (u32 LE)
-pub const MATCH_ARGS_LEN: usize =
-    ORDER_ARGS_LEN + CHANNEL_OUTPOINT_LEN + LOCK_HASH_LEN + FIBER_PUBKEY_LEN; // 166
+pub const MATCH_ARGS_LEN: usize = ORDER_ARGS_LEN + CHANNEL_OUTPOINT_LEN + LOCK_HASH_LEN; // 133
 /// Fiber funding lock args: blake160(x-only aggregated MuSig2 pubkey).
 pub const FIBER_FUNDING_LOCK_ARGS_LEN: usize = 20;
 
@@ -32,8 +31,36 @@ pub const RENT_PER_BLOCK_LEN: usize = 8; // f64
 pub const BLOCKNUMBER_LEN: usize = 8;
 
 pub const ORDER_DATA_LEN: usize = XUDT_AMOUNT_LEN + CHANNEL_CAPACITY_LEN + ESCROW_BLOCKS_LEN; // 32
+pub const MATCH_STATUS_LEN: usize = 1;
+
 pub const MATCH_DATA_LEN: usize =
-    XUDT_AMOUNT_LEN + RENT_PER_BLOCK_LEN + ESCROW_BLOCKS_LEN + BLOCKNUMBER_LEN; // 40
+    XUDT_AMOUNT_LEN + RENT_PER_BLOCK_LEN + ESCROW_BLOCKS_LEN + BLOCKNUMBER_LEN + MATCH_STATUS_LEN; // 41
+
+// ---------------------------------------------------------------------------
+// MatchStatus — 1-byte lifecycle state
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatchStatus {
+    Frozen = 0x00,
+    Enabled = 0x01,
+    Discarded = 0x02,
+}
+
+impl MatchStatus {
+    pub fn from_byte(b: u8) -> Option<Self> {
+        match b {
+            0x00 => Some(Self::Frozen),
+            0x01 => Some(Self::Enabled),
+            0x02 => Some(Self::Discarded),
+            _ => None,
+        }
+    }
+
+    pub fn to_byte(self) -> u8 {
+        self as u8
+    }
+}
 
 // ---------------------------------------------------------------------------
 // ChannelOutpoint — raw 36-byte outpoint (no ckb-types dependency)
@@ -238,20 +265,18 @@ impl OrderData {
 }
 
 // ---------------------------------------------------------------------------
-// MatchArgs — 166-byte Match Cell lock args
+// MatchArgs — 133-byte Match Cell lock args
 // ---------------------------------------------------------------------------
-// Layout: OrderArgs[65] | channel_outpoint[36] | seller_lock_hash[32] | fiber_pubkey[33]
+// Layout: OrderArgs[65] | channel_outpoint[36] | seller_lock_hash[32]
 //
-// `order_args.fiber_pubkey` is the buyer's Fiber channel funding pubkey.
-// `fiber_pubkey` is the seller's Fiber channel funding pubkey (added at match time).
+// `order_args.fiber_pubkey` is the buyer's Fiber channel funding pubkey
+// (kept for counterparty identification by the seller).
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MatchArgs {
     pub order_args: OrderArgs,
     pub channel_outpoint: OutPoint,
     pub seller_lock_hash: [u8; LOCK_HASH_LEN],
-    /// Seller's Fiber channel funding pubkey (33-byte compressed secp256k1).
-    pub fiber_pubkey: CompressedPubkey,
 }
 
 impl MatchArgs {
@@ -259,13 +284,11 @@ impl MatchArgs {
         order_args: OrderArgs,
         channel_outpoint: OutPoint,
         seller_lock_hash: [u8; LOCK_HASH_LEN],
-        fiber_pubkey: CompressedPubkey,
     ) -> Self {
         Self {
             order_args,
             channel_outpoint,
             seller_lock_hash,
-            fiber_pubkey,
         }
     }
 
@@ -280,14 +303,10 @@ impl MatchArgs {
         let seller_offset = ORDER_ARGS_LEN + CHANNEL_OUTPOINT_LEN;
         let mut seller_lock_hash = [0u8; LOCK_HASH_LEN];
         seller_lock_hash.copy_from_slice(&args[seller_offset..seller_offset + LOCK_HASH_LEN]);
-        let fiber_pubkey = CompressedPubkey::from_slice(
-            &args[seller_offset + LOCK_HASH_LEN..seller_offset + LOCK_HASH_LEN + FIBER_PUBKEY_LEN],
-        )?;
         Ok(Self {
             order_args,
             channel_outpoint,
             seller_lock_hash,
-            fiber_pubkey,
         })
     }
 
@@ -298,21 +317,20 @@ impl MatchArgs {
             .copy_from_slice(&self.channel_outpoint.to_bytes());
         let seller_offset = ORDER_ARGS_LEN + CHANNEL_OUTPOINT_LEN;
         buf[seller_offset..seller_offset + LOCK_HASH_LEN].copy_from_slice(&self.seller_lock_hash);
-        buf[seller_offset + LOCK_HASH_LEN..MATCH_ARGS_LEN]
-            .copy_from_slice(&self.fiber_pubkey.to_bytes());
         buf
     }
 }
 
 // ---------------------------------------------------------------------------
-// MatchData — 40-byte Match Cell data
+// MatchData — 41-byte Match Cell data
 // ---------------------------------------------------------------------------
 // Layout: xudt_amount[16] | rent_per_block[8] | escrow_blocks[8] |
-//         last_extraction_block[8]
+//         last_extraction_block[8] | status[1]
 //
 // `rent_per_block` is pre-computed at match time as total_rent / escrow_blocks.
 // `escrow_blocks` is stored here so Match verifiers can compute expiry
 // without loading the original Order cell.
+// `status`: 0x00 = Frozen, 0x01 = Enabled, 0x02 = Discarded.
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct MatchData {
@@ -320,17 +338,24 @@ pub struct MatchData {
     pub rent_per_block: f64,
     pub escrow_blocks: u64,
     pub last_extraction_block: u64,
+    pub status: MatchStatus,
 }
 
 impl Eq for MatchData {}
 
 impl MatchData {
-    pub fn new(xudt_amount: u128, rent_per_block: f64, escrow_blocks: u64) -> Self {
+    pub fn new(
+        xudt_amount: u128,
+        rent_per_block: f64,
+        escrow_blocks: u64,
+        status: MatchStatus,
+    ) -> Self {
         Self {
             xudt_amount,
             rent_per_block,
             escrow_blocks,
             last_extraction_block: 0,
+            status,
         }
     }
 
@@ -338,6 +363,8 @@ impl MatchData {
         if data.len() < MATCH_DATA_LEN {
             return Err("Bad Match data length");
         }
+        let status_byte =
+            data[XUDT_AMOUNT_LEN + RENT_PER_BLOCK_LEN + ESCROW_BLOCKS_LEN + BLOCKNUMBER_LEN];
         Ok(Self {
             xudt_amount: u128::from_le_bytes(data[0..XUDT_AMOUNT_LEN].try_into().unwrap()),
             rent_per_block: f64::from_le_bytes(
@@ -352,10 +379,12 @@ impl MatchData {
                     .unwrap(),
             ),
             last_extraction_block: u64::from_le_bytes(
-                data[XUDT_AMOUNT_LEN + RENT_PER_BLOCK_LEN + ESCROW_BLOCKS_LEN..MATCH_DATA_LEN]
+                data[XUDT_AMOUNT_LEN + RENT_PER_BLOCK_LEN + ESCROW_BLOCKS_LEN
+                    ..XUDT_AMOUNT_LEN + RENT_PER_BLOCK_LEN + ESCROW_BLOCKS_LEN + BLOCKNUMBER_LEN]
                     .try_into()
                     .unwrap(),
             ),
+            status: MatchStatus::from_byte(status_byte).unwrap_or(MatchStatus::Frozen),
         })
     }
 
@@ -367,8 +396,11 @@ impl MatchData {
         buf[XUDT_AMOUNT_LEN + RENT_PER_BLOCK_LEN
             ..XUDT_AMOUNT_LEN + RENT_PER_BLOCK_LEN + ESCROW_BLOCKS_LEN]
             .copy_from_slice(&self.escrow_blocks.to_le_bytes());
-        buf[XUDT_AMOUNT_LEN + RENT_PER_BLOCK_LEN + ESCROW_BLOCKS_LEN..MATCH_DATA_LEN]
+        buf[XUDT_AMOUNT_LEN + RENT_PER_BLOCK_LEN + ESCROW_BLOCKS_LEN
+            ..XUDT_AMOUNT_LEN + RENT_PER_BLOCK_LEN + ESCROW_BLOCKS_LEN + BLOCKNUMBER_LEN]
             .copy_from_slice(&self.last_extraction_block.to_le_bytes());
+        buf[XUDT_AMOUNT_LEN + RENT_PER_BLOCK_LEN + ESCROW_BLOCKS_LEN + BLOCKNUMBER_LEN] =
+            self.status.to_byte();
         buf
     }
 
@@ -378,9 +410,10 @@ impl MatchData {
         tip_block: u64,
         xudt_extraction: u128,
     ) -> bool {
-        // Note: rent_per_block is intentionally not compared — f64 equality
-        // is unreliable across platforms (hardware vs RISC-V soft-float).
-        // It is an invariant set at match time and never changes.
+        // Note: rent_per_block and status are intentionally not compared —
+        // rent_per_block because f64 equality is unreliable across platforms
+        // (hardware vs RISC-V soft-float), and status because it is validated
+        // separately by the caller verifier.
         if new_match_data.escrow_blocks != self.escrow_blocks
             || new_match_data.last_extraction_block != tip_block
             || new_match_data.xudt_amount.saturating_add(xudt_extraction) > self.xudt_amount

@@ -2,7 +2,8 @@ use std::str::FromStr;
 
 use ckb_cinnabar::calculator::{
     address::Address,
-    instruction::predefined::balance_and_sign,
+    instruction::{predefined::balance_and_sign, DefaultInstruction},
+    operation::basic::AddSecp256k1SighashCellDep,
     re_exports::{
         ckb_sdk::constants::ONE_CKB,
         ckb_types::{h256, prelude::hex_string},
@@ -16,25 +17,32 @@ use ckb_cinnabar::calculator::{
 use opticrum_calculator::{
     calculator::match_order,
     reader::scan_orders,
-    types::{CompressedPubkey, MatchArgs, OutPoint},
+    types::{MatchArgs, OutPoint},
 };
 
 #[tokio::main]
 pub async fn main() -> eyre::Result<()> {
+    let _ = dotenvy::dotenv();
+
     let seller_address = Address::from_str(
         "ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqtz32u8mgzk57zdtt6n62z4y2zyh8egkdcahyxk3",
     )
     .unwrap();
     let seller_lock_hash =
         h256!("0x48c1f38d2cad56462319ec5a2b241e0c49e483eb9e5225e77de0359b1c9e60e1");
-    let seller_fiber_pubkey = CompressedPubkey::from_slice(&hex::decode(
-        "025bfeb476486c0464cb440c3ef2033fc34f0dd9b436579d4eceb430960633573f",
-    )?)
-    .unwrap();
     let channel_tx_hash =
         h256!("0x74b41bedb5f0f9add71bcbff7f822f916781e356fdd016e195305f6e85956983");
     let channel_index: u32 = 0;
     let order_index: usize = 2; // pick which scanned order to match
+
+    let seller_pk_hex = std::env::var("SELLER_PRIVATE_KEY").map_err(|_| {
+        eyre::eyre!(
+            "SELLER_PRIVATE_KEY not set.\n\
+             Create a .env file or export the environment variable:\n\
+             SELLER_PRIVATE_KEY=<64-char hex private key>"
+        )
+    })?;
+    let seller_key = SecretKey::from_slice(&hex::decode(&seller_pk_hex)?).unwrap();
 
     let rpc = RpcClient::new_testnet();
 
@@ -58,21 +66,13 @@ pub async fn main() -> eyre::Result<()> {
         order.order_args.clone(),
         OutPoint::new(channel_tx_hash.into(), channel_index),
         seller_lock_hash.into(),
-        seller_fiber_pubkey,
     );
 
+    let prepare = DefaultInstruction::new(vec![Box::new(AddSecp256k1SighashCellDep {})]);
     let match_tx = match_order::<RpcClient>(seller_address.clone(), order.clone(), match_args);
-    // let balance = balance_and_sign_with_ckb_cli(&seller_address, 1000, None);
-    let balance = balance_and_sign(
-        &seller_address,
-        SecretKey::from_slice(&hex::decode(
-            "736632957c05bf1d2eb480e1a53fa509bd160b842cd8fcd42af7f82ccdf14a16",
-        )?)
-        .unwrap(),
-        1000,
-    );
+    let balance = balance_and_sign(&seller_address, seller_key, 1000);
 
-    let (tx, _) = TransactionCalculator::new(vec![match_tx, balance])
+    let (tx, _) = TransactionCalculator::new(vec![prepare, match_tx, balance])
         .new_skeleton(&rpc)
         .await?;
 

@@ -7,7 +7,7 @@ use ckb_cinnabar_verifier::{
     Result, TREE_ROOT,
 };
 use opticrum_protocol::{
-    MatchArgs, MatchData, OrderArgs, OrderData, MATCH_ARGS_LEN, ORDER_ARGS_LEN,
+    MatchArgs, MatchData, MatchStatus, OrderArgs, OrderData, MATCH_ARGS_LEN, ORDER_ARGS_LEN,
 };
 
 mod error;
@@ -33,10 +33,12 @@ pub const FIBER_FUNDING_TYPE_ID_MAINNET: [u8; 32] = [
 /// Matches the channel type script seeded in `tests/tests/opticrum_tests.rs`
 /// (`code_hash = [0xCC; 32]`, `hash_type = Data1`, empty args).
 pub const FIBER_FUNDING_TYPE_ID_MOCK: [u8; 32] = [
-    0x77, 0xc9, 0x16, 0x3a, 0xdd, 0xbf, 0x87, 0xc8, 0x05, 0xbe, 0x3b, 0x6c, 0x85, 0x69, 0xb8,
-    0xe0, 0x15, 0xa4, 0xca, 0x0e, 0xf3, 0xc6, 0x89, 0x15, 0x02, 0x34, 0xf0, 0xc8, 0x02, 0xa7,
-    0x69, 0x00,
+    0x77, 0xc9, 0x16, 0x3a, 0xdd, 0xbf, 0x87, 0xc8, 0x05, 0xbe, 0x3b, 0x6c, 0x85, 0x69, 0xb8, 0xe0,
+    0x15, 0xa4, 0xca, 0x0e, 0xf3, 0xc6, 0x89, 0x15, 0x02, 0x34, 0xf0, 0xc8, 0x02, 0xa7, 0x69, 0x00,
 ];
+
+/// Approximate number of blocks in 3 days (3 × ABOUT_ONE_DAY_BLOCKS = 30,000).
+pub const ABOUT_THREE_DAYS_BLOCKS: u64 = 30_000;
 
 #[derive(Default, PartialEq, Eq)]
 enum Branch {
@@ -65,6 +67,8 @@ impl Branch {
 enum OpticrumPattern {
     OrderCancel,
     OrderMatch,
+    MatchEnable,
+    MatchDiscard,
     MatchExtract,
     MatchDestroy,
     Unknown,
@@ -96,17 +100,27 @@ impl OpticrumState {
                     _ => OpticrumPattern::Unknown,
                 }
             }
-            Branch::Match(match_args, _) => {
+            Branch::Match(match_args, match_data) => {
                 let Some(another) = another else {
                     return OpticrumPattern::MatchDestroy;
                 };
                 match &another.branch {
                     Branch::Order(_, _) => OpticrumPattern::Unknown,
-                    Branch::Match(another_match_args, _) => {
-                        if match_args == another_match_args && self.xudt == another.xudt {
-                            OpticrumPattern::MatchExtract
-                        } else {
-                            OpticrumPattern::Unknown
+                    Branch::Match(another_match_args, another_match_data) => {
+                        if match_args != another_match_args || self.xudt != another.xudt {
+                            return OpticrumPattern::Unknown;
+                        }
+                        match (match_data.status, another_match_data.status) {
+                            (s, ns) if s == MatchStatus::Frozen && ns == MatchStatus::Enabled => {
+                                OpticrumPattern::MatchEnable
+                            }
+                            (s, ns) if s == MatchStatus::Frozen && ns == MatchStatus::Discarded => {
+                                OpticrumPattern::MatchDiscard
+                            }
+                            (s, ns) if s == MatchStatus::Enabled && ns == MatchStatus::Enabled => {
+                                OpticrumPattern::MatchExtract
+                            }
+                            _ => OpticrumPattern::Unknown,
                         }
                     }
                     _ => OpticrumPattern::Unknown,
@@ -146,6 +160,12 @@ impl OpticrumState {
         let Branch::Match(_, another_match_data) = &another.branch else {
             return false;
         };
+        // Both old and new must be Enabled for extraction
+        if match_data.status != MatchStatus::Enabled
+            || another_match_data.status != MatchStatus::Enabled
+        {
+            return false;
+        }
         let liquidity_rent = self.liquidity_rent();
         let tip_block = load_header_block_number(0).unwrap_or_default();
         if self.xudt.is_some() {
@@ -169,6 +189,8 @@ cinnabar_main!(
     (TREE_ROOT, Root),
     ("order_cancel", OrderCancel),
     ("order_match", OrderMatch),
+    ("match_enable", MatchEnable),
+    ("match_discard", MatchDiscard),
     ("match_extract", MatchExtract),
     ("match_destroy", MatchDestroy),
 );

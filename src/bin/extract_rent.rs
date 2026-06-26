@@ -2,7 +2,8 @@ use std::str::FromStr;
 
 use ckb_cinnabar::calculator::{
     address::Address,
-    instruction::predefined::balance_and_sign_with_ckb_cli,
+    instruction::{predefined::balance_and_sign_with_ckb_cli, DefaultInstruction},
+    operation::basic::AddSecp256k1SighashCellDep,
     re_exports::{ckb_sdk::constants::ONE_CKB, ckb_types::prelude::hex_string, eyre, tokio},
     rpc::{RpcClient, RPC},
     TransactionCalculator,
@@ -13,7 +14,7 @@ use opticrum_calculator::{calculator::extract_rent, reader::scan_matches};
 pub async fn main() -> eyre::Result<()> {
     // --- CONFIGURE THESE VALUES ---
     let seller_address = Address::from_str(
-        "ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqv5puz2ee96nuh9nmc6rtm0n8v7agju4rgdmxlnk",
+        "ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqtz32u8mgzk57zdtt6n62z4y2zyh8egkdcahyxk3",
     )
     .unwrap();
     let match_index: usize = 0; // pick which scanned match to extract from
@@ -46,10 +47,11 @@ pub async fn main() -> eyre::Result<()> {
         println!("  Match is EXHAUSTED — destroy_match will be used");
     }
 
+    let prepare = DefaultInstruction::new(vec![Box::new(AddSecp256k1SighashCellDep {})]);
     let extract = extract_rent::<RpcClient>(seller_address.clone(), match_info.clone(), tip_block);
     let balance = balance_and_sign_with_ckb_cli(&seller_address, 1000, None);
 
-    let (tx, _) = TransactionCalculator::new(vec![extract, balance])
+    let (tx, _) = TransactionCalculator::new(vec![prepare, extract, balance])
         .new_skeleton(&rpc)
         .await?;
 

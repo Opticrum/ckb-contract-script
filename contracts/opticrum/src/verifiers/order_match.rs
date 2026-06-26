@@ -2,14 +2,15 @@ use ckb_cinnabar_verifier::{re_exports::ckb_std, Result, Verification};
 use ckb_std::{
     ckb_constants::Source,
     debug,
-    high_level::{load_cell_capacity, load_header},
+    high_level::{load_cell_capacity, load_cell_occupied_capacity, load_header},
 };
 
 use crate::{
     error::OpticrumError,
-    utils::{find_channel_in_celldeps, has_lock_in_inputs, verify_channel_funding_pubkey},
+    utils::{find_channel_in_celldeps, has_lock_in_inputs},
     Branch, Context,
 };
+use opticrum_protocol::MatchStatus;
 
 /// Verifies that a seller has properly matched an Order Cell.
 ///
@@ -66,13 +67,9 @@ impl Verification<Context> for OrderMatch {
             return Err(OpticrumError::ChannelCellNotInDep.into());
         };
 
-        // 2. Verify channel funding pubkey matches MuSig2 aggregation
-        if !verify_channel_funding_pubkey(
-            &match_args.channel_outpoint,
-            &match_args.order_args.fiber_pubkey,
-            &match_args.fiber_pubkey,
-        ) {
-            return Err(OpticrumError::ChannelFundingPubkeyMismatch.into());
+        // 2. Verify MatchData status is Frozen (initial state after matching)
+        if match_data.status != MatchStatus::Frozen {
+            return Err(OpticrumError::BadMatchStatus.into());
         }
 
         // 3. Seller must participate
@@ -90,15 +87,29 @@ impl Verification<Context> for OrderMatch {
             return Err(OpticrumError::MatchDataNotSet.into());
         }
 
-        // 5. Total capacity (rent pool) must transfer intact from Order to Match.
-        //    Note: unoccupied differs by 8 CKB (Match data is 8 bytes larger),
-        //    so we compare the full cell capacity.
-        let old_cap =
-            load_cell_capacity(0, Source::GroupInput).map_err(|_| OpticrumError::BadOrderMatch)?;
-        let new_cap =
-            load_cell_capacity(0, Source::Output).map_err(|_| OpticrumError::BadOrderMatch)?;
-        if old_cap != new_cap {
-            debug!("Capacity mismatch: order={} vs match={}", old_cap, new_cap);
+        // 5. Unoccupied capacity (rent pool) must transfer intact from Order to Match.
+        //    Total capacity differs by ORDER_TO_MATCH_CAPACITY_RESERVE because
+        //    the Match cell has larger args + data. We compare unoccupied capacity
+        //    to ensure the rent is preserved.
+        let old_unoccupied = {
+            let total = load_cell_capacity(0, Source::GroupInput)
+                .map_err(|_| OpticrumError::BadOrderMatch)?;
+            let occupied = load_cell_occupied_capacity(0, Source::GroupInput)
+                .map_err(|_| OpticrumError::BadOrderMatch)?;
+            total.saturating_sub(occupied)
+        };
+        let new_unoccupied = {
+            let total =
+                load_cell_capacity(0, Source::Output).map_err(|_| OpticrumError::BadOrderMatch)?;
+            let occupied = load_cell_occupied_capacity(0, Source::Output)
+                .map_err(|_| OpticrumError::BadOrderMatch)?;
+            total.saturating_sub(occupied)
+        };
+        if old_unoccupied != new_unoccupied {
+            debug!(
+                "Unoccupied capacity mismatch: order={} vs match={}",
+                old_unoccupied, new_unoccupied
+            );
             return Err(OpticrumError::ChannelCapacityMismatch.into());
         }
 

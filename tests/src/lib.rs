@@ -3,7 +3,7 @@
 pub mod faker;
 
 #[cfg(test)]
-mod unit;
+mod encoding;
 
 #[cfg(test)]
 mod integration;

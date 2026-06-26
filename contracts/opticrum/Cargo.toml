@@ -7,4 +7,3 @@ edition = "2021"
 ckb-cinnabar-verifier = { workspace = true }
 opticrum-protocol = { path = "../../opticrum-protocol" }
 ckb-hash = { version = "0.200", default-features = false, features = ["blake2b-ref"] }
-secp256k1 = { path = "../../secp256k1" }
