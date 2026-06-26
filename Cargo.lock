@@ -304,6 +304,7 @@ dependencies = [
 [[package]]
 name = "ckb-cinnabar"
 version = "0.1.0"
+source = "git+https://github.com/ashuralyk/ckb-cinnabar.git?branch=master#638558a473dc67f2f8e2d07fa37109cc82103633"
 dependencies = [
  "chrono",
  "ckb-cinnabar-calculator",
@@ -318,6 +319,7 @@ dependencies = [
 [[package]]
 name = "ckb-cinnabar-calculator"
 version = "0.1.0"
+source = "git+https://github.com/ashuralyk/ckb-cinnabar.git?branch=master#638558a473dc67f2f8e2d07fa37109cc82103633"
 dependencies = [
  "async-trait",
  "bech32",
@@ -347,6 +349,7 @@ dependencies = [
 [[package]]
 name = "ckb-cinnabar-verifier"
 version = "0.1.0"
+source = "git+https://github.com/ashuralyk/ckb-cinnabar.git?branch=master#638558a473dc67f2f8e2d07fa37109cc82103633"
 dependencies = [
  "blake2b-ref",
  "ckb-std",

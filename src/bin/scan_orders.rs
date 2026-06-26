@@ -41,6 +41,7 @@ pub async fn main() -> eyre::Result<()> {
         if let Some(ref x) = o.xudt {
             println!("  xudt_amount: {}", x.amount);
         }
+        println!("\n");
     }
 
     Ok(())

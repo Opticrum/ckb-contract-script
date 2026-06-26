@@ -1,7 +1,7 @@
 use ckb_cinnabar_verifier::{re_exports::ckb_std, Result, Verification};
 use ckb_std::debug;
 
-use crate::{error::OpticrumError, utils::has_lock_in_inputs, Branch, Context};
+use crate::{error::OpticrumError, state::Context, utils::require_input_lock};
 
 /// Verifies that a Match Cell can be destroyed.
 ///
@@ -16,16 +16,14 @@ impl Verification<Context> for MatchDestroy {
     fn verify(&mut self, name: &str, ctx: &mut Context) -> Result<Option<&str>> {
         debug!("Entering [{name}]");
 
-        let Branch::Match(match_args, _) = &ctx.old_state.branch else {
-            return Err(OpticrumError::UnexpectedBranch.into());
-        };
+        let (match_args, _) = ctx.expect_old_match()?;
 
         // Only seller can destroy
-        let seller_present = has_lock_in_inputs(&match_args.seller_lock_hash)?;
-        if !seller_present {
-            debug!("[{name}] Only seller can destroy a match");
-            return Err(OpticrumError::SellerAuthMissing.into());
-        }
+        require_input_lock(
+            name,
+            &match_args.seller_lock_hash,
+            OpticrumError::SellerAuthMissing,
+        )?;
 
         // Must be exhausted
         if !ctx.old_state.is_exhausted()? {

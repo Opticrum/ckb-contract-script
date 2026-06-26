@@ -61,6 +61,33 @@ async fn opticrum_query<T: RPC>(rpc: &T) -> eyre::Result<CellQueryOptions> {
 }
 
 // ---------------------------------------------------------------------------
+// Generic cell scanner
+// ---------------------------------------------------------------------------
+
+/// Iterate all cells locked by the Opticrum script and parse them with
+/// the provided function. Silently skips cells that fail to parse.
+async fn scan_cells<T: RPC, U>(
+    rpc: &T,
+    parse_fn: impl Fn(&LiveCell) -> eyre::Result<U>,
+) -> eyre::Result<Vec<U>> {
+    let query = opticrum_query(rpc).await?;
+    let search_key = query.into();
+    let mut results = Vec::new();
+    let mut iter = GetCellsIter::new(rpc, search_key);
+
+    while let Some(batch) = iter.next_batch(50).await? {
+        for cell in batch {
+            let live: LiveCell = cell.into();
+            if let Ok(value) = parse_fn(&live) {
+                results.push(value);
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+// ---------------------------------------------------------------------------
 // Cell → typed struct parsers
 // ---------------------------------------------------------------------------
 
@@ -75,22 +102,43 @@ fn real_rent_capacity(output: &CellOutput, data: &[u8]) -> eyre::Result<u64> {
     Ok(total.saturating_sub(occupied_capacity.as_u64()))
 }
 
+/// Fields common to every Opticrum cell, extracted once by [`parse_cell_prologue`].
+struct ParsedCellMeta {
+    lock_args: Vec<u8>,
+    raw_data: Vec<u8>,
+    outpoint: OutPoint,
+    block_number: u64,
+    output: CellOutput,
+}
+
+/// Parse the shared envelope of an Opticrum cell.
+///
+/// Extracts the fields that are identical between Order and Match parsing:
+/// raw lock args, output data, outpoint, block number, and the cell output.
+fn parse_cell_prologue(cell: &LiveCell) -> eyre::Result<ParsedCellMeta> {
+    Ok(ParsedCellMeta {
+        lock_args: cell.output.lock().args().raw_data().to_vec(),
+        raw_data: cell.output_data.to_vec(),
+        outpoint: OutPoint::from_slice(cell.out_point.as_slice())
+            .map_err(|e| eyre!("Bad outpoint: {e}"))?,
+        block_number: cell.block_number,
+        output: cell.output.clone(),
+    })
+}
+
 /// Parse a `LiveCell` (with Opticrum lock) into an `OrderInfo`.
 fn parse_order_cell(cell: &LiveCell) -> eyre::Result<OrderInfo> {
-    let lock_args = cell.output.lock().args().raw_data();
+    let base = parse_cell_prologue(cell)?;
 
     let order_args =
-        OrderArgs::from_slice(&lock_args).map_err(|e| eyre!("Bad Order args: {}", e))?;
+        OrderArgs::from_slice(&base.lock_args).map_err(|e| eyre!("Bad Order args: {}", e))?;
 
-    // Order cell data: xUDT amount (16 bytes LE) or empty for CKB
-    let raw_data = &cell.output_data;
-    let order_data = OrderData::from_slice(raw_data).map_err(|e| eyre!("Bad Order data: {}", e))?;
+    let order_data =
+        OrderData::from_slice(&base.raw_data).map_err(|e| eyre!("Bad Order data: {}", e))?;
 
-    // Real rent = unoccupied CKB minus the reserve pre-funded for Order→Match Keep
-    let ckb_capacity = real_rent_capacity(&cell.output, raw_data)?;
+    let ckb_capacity = real_rent_capacity(&base.output, &base.raw_data)?;
 
-    // Detect xUDT by presence of a type script on the cell
-    let xudt = cell.output.type_().to_opt().map(|type_script| Xudt {
+    let xudt = base.output.type_().to_opt().map(|type_script| Xudt {
         amount: order_data.xudt_amount,
         type_script,
     });
@@ -100,23 +148,23 @@ fn parse_order_cell(cell: &LiveCell) -> eyre::Result<OrderInfo> {
         order_data,
         xudt,
         ckb_capacity,
-        order_outpoint: OutPoint::from_slice(cell.out_point.as_slice())
-            .map_err(|e| eyre!("{e}"))?,
+        order_outpoint: base.outpoint,
     })
 }
 
 /// Parse a `LiveCell` (with Opticrum lock) into a `MatchInfo`.
 fn parse_match_cell(cell: &LiveCell) -> eyre::Result<MatchInfo> {
-    let lock_args = cell.output.lock().args().raw_data();
+    let base = parse_cell_prologue(cell)?;
 
     let match_args =
-        MatchArgs::from_slice(&lock_args).map_err(|e| eyre!("Bad Match args: {}", e))?;
+        MatchArgs::from_slice(&base.lock_args).map_err(|e| eyre!("Bad Match args: {}", e))?;
 
-    let raw_data = &cell.output_data;
-    let match_data = MatchData::from_slice(raw_data).map_err(|e| eyre!("Bad Match data: {}", e))?;
+    let match_data =
+        MatchData::from_slice(&base.raw_data).map_err(|e| eyre!("Bad Match data: {}", e))?;
 
-    let ckb_capacity = real_rent_capacity(&cell.output, raw_data)?;
-    let xudt = cell.output.type_().to_opt().map(|type_script| Xudt {
+    let ckb_capacity = real_rent_capacity(&base.output, &base.raw_data)?;
+
+    let xudt = base.output.type_().to_opt().map(|type_script| Xudt {
         amount: match_data.xudt_amount,
         type_script,
     });
@@ -126,9 +174,8 @@ fn parse_match_cell(cell: &LiveCell) -> eyre::Result<MatchInfo> {
         match_data,
         xudt,
         ckb_capacity,
-        match_outpoint: OutPoint::from_slice(cell.out_point.as_slice())
-            .map_err(|e| eyre!("{e}"))?,
-        match_current_block: cell.block_number,
+        match_outpoint: base.outpoint,
+        match_current_block: base.block_number,
     })
 }
 
@@ -137,47 +184,11 @@ fn parse_match_cell(cell: &LiveCell) -> eyre::Result<MatchInfo> {
 // ---------------------------------------------------------------------------
 
 /// Scan all live Order cells on-chain.
-///
-/// Queries the indexer for cells with the Opticrum lock whose args length
-/// is exactly `ORDER_ARGS_LEN` (65 bytes).
 pub async fn scan_orders<T: RPC>(rpc: &T) -> eyre::Result<Vec<OrderInfo>> {
-    let query = opticrum_query(rpc).await?;
-
-    let search_key = query.into();
-    let mut orders = Vec::new();
-    let mut iter = GetCellsIter::new(rpc, search_key);
-
-    while let Some(batch) = iter.next_batch(50).await? {
-        for cell in batch {
-            let live: LiveCell = cell.into();
-            if let Ok(value) = parse_order_cell(&live) {
-                orders.push(value);
-            }
-        }
-    }
-
-    Ok(orders)
+    scan_cells(rpc, parse_order_cell).await
 }
 
 /// Scan all live Match cells on-chain.
-///
-/// Queries the indexer for cells with the Opticrum lock whose args length
-/// is exactly `MATCH_ARGS_LEN` (133 bytes).
 pub async fn scan_matches<T: RPC>(rpc: &T) -> eyre::Result<Vec<MatchInfo>> {
-    let query = opticrum_query(rpc).await?;
-
-    let search_key = query.into();
-    let mut matches = Vec::new();
-    let mut iter = GetCellsIter::new(rpc, search_key);
-
-    while let Some(batch) = iter.next_batch(50).await? {
-        for cell in batch {
-            let live: LiveCell = cell.into();
-            if let Ok(value) = parse_match_cell(&live) {
-                matches.push(value);
-            }
-        }
-    }
-
-    Ok(matches)
+    scan_cells(rpc, parse_match_cell).await
 }

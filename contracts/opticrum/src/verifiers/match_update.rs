@@ -3,8 +3,8 @@ use ckb_std::debug;
 
 use crate::{
     error::OpticrumError,
-    utils::{check_channel_existence, has_lock_in_inputs, load_header_block_number},
-    Branch, Context,
+    state::Context,
+    utils::{check_channel_existence, has_input_lock, load_header_block_number},
 };
 
 /// Verifies Match→Match transitions. Since the root verifier cannot distinguish
@@ -26,16 +26,8 @@ impl Verification<Context> for MatchUpdate {
     fn verify(&mut self, name: &str, ctx: &mut Context) -> Result<Option<&str>> {
         debug!("Entering [{name}]");
 
-        let Branch::Match(match_args, match_data) = &ctx.old_state.branch else {
-            return Err(OpticrumError::UnexpectedBranch.into());
-        };
-        let new_state = ctx
-            .new_state
-            .as_ref()
-            .ok_or(OpticrumError::BadMatchUpdate)?;
-        let Branch::Match(new_match_args, new_match_data) = &new_state.branch else {
-            return Err(OpticrumError::UnexpectedBranch.into());
-        };
+        let (match_args, match_data) = ctx.expect_old_match()?;
+        let (new_match_args, new_match_data) = ctx.expect_new_match()?;
 
         // MatchArgs must be identical across the transition
         if match_args != new_match_args {
@@ -43,10 +35,16 @@ impl Verification<Context> for MatchUpdate {
             return Err(OpticrumError::BadMatchUpdate.into());
         }
 
-        let seller_present = has_lock_in_inputs(&match_args.seller_lock_hash)?;
-        let buyer_present = has_lock_in_inputs(&match_args.order_args.buyer_lock_hash)?;
+        // rent_per_block must be preserved across ALL MatchUpdate transitions
+        if match_data.shannons_per_block != new_match_data.shannons_per_block {
+            debug!("[{name}] rent_per_block changed during update");
+            return Err(OpticrumError::RentPerBlockMismatch.into());
+        }
 
-        match (seller_present, buyer_present) {
+        let has_seller = has_input_lock(&match_args.seller_lock_hash)?;
+        let has_buyer = has_input_lock(&match_args.order_args.buyer_lock_hash)?;
+
+        match (has_seller, has_buyer) {
             // ===== Seller extraction path =====
             (true, false) => {
                 // 1. Channel must still exist
@@ -77,7 +75,7 @@ impl Verification<Context> for MatchUpdate {
                     let extracted = ctx
                         .old_state
                         .unoccupied_capacity
-                        .saturating_sub(new_state.unoccupied_capacity);
+                        .saturating_sub(ctx.new_state.as_ref().unwrap().unoccupied_capacity);
                     // Integer arithmetic — no f64 rounding, exact comparison
                     if extracted != expected_rent {
                         debug!(
@@ -88,13 +86,7 @@ impl Verification<Context> for MatchUpdate {
                     }
                 }
 
-                // 4. rent_per_block preserved (u64 — direct comparison is safe)
-                if match_data.shannons_per_block != new_match_data.shannons_per_block {
-                    debug!("[{name}] rent_per_block changed during extraction");
-                    return Err(OpticrumError::RentPerBlockMismatch.into());
-                }
-
-                // 5. last_extraction_block updated to tip
+                // 4. last_extraction_block updated to tip
                 let tip_block = load_header_block_number(0)?;
                 if new_match_data.last_extraction_block != tip_block {
                     debug!(
@@ -109,22 +101,17 @@ impl Verification<Context> for MatchUpdate {
             }
             // ===== Buyer inject/withdraw path =====
             (false, true) => {
-                // 1. rent_per_block preserved (u64 — direct comparison)
-                if match_data.shannons_per_block != new_match_data.shannons_per_block {
-                    debug!("[{name}] rent_per_block changed by buyer");
-                    return Err(OpticrumError::RentPerBlockMismatch.into());
-                }
-
-                // 2. last_extraction_block preserved
+                // 1. last_extraction_block preserved
                 if new_match_data.last_extraction_block != match_data.last_extraction_block {
                     debug!("[{name}] last_extraction_block changed by buyer");
                     return Err(OpticrumError::BadMatchDataUpdate.into());
                 }
 
                 // 3. For xUDT matches, verify type script preserved
-                if let (Some((_, old_type)), Some((_, new_type))) =
-                    (&ctx.old_state.xudt, &new_state.xudt)
-                {
+                if let (Some((_, old_type)), Some(Some((_, new_type)))) = (
+                    &ctx.old_state.xudt,
+                    &ctx.new_state.as_ref().map(|s| &s.xudt),
+                ) {
                     if old_type != new_type {
                         debug!("[{name}] xUDT type script changed during buyer update");
                         return Err(OpticrumError::BadMatchUpdate.into());

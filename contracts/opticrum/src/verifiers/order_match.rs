@@ -1,14 +1,10 @@
 use ckb_cinnabar_verifier::{re_exports::ckb_std, Result, Verification};
-use ckb_std::{
-    ckb_constants::Source,
-    debug,
-    high_level::{load_cell_capacity, load_cell_occupied_capacity, load_header},
-};
+use ckb_std::{ckb_constants::Source, debug, high_level::load_header};
 
 use crate::{
     error::OpticrumError,
-    utils::{find_channel_in_celldeps, has_lock_in_inputs},
-    Branch, Context,
+    state::Context,
+    utils::{find_channel_in_celldeps, require_input_lock},
 };
 
 /// Verifies that a seller has properly matched an Order Cell.
@@ -34,13 +30,8 @@ impl Verification<Context> for OrderMatch {
     fn verify(&mut self, name: &str, ctx: &mut Context) -> Result<Option<&str>> {
         debug!("Entering [{name}]");
 
-        let Branch::Order(_, order_data) = &ctx.old_state.branch else {
-            return Err(OpticrumError::UnexpectedBranch.into());
-        };
-
-        let Branch::Match(match_args, match_data) = &ctx.new_state.as_ref().unwrap().branch else {
-            return Err(OpticrumError::UnexpectedBranch.into());
-        };
+        let (_, order_data) = ctx.expect_old_order()?;
+        let (match_args, match_data) = ctx.expect_new_match()?;
 
         // 1. Verify a CellDep exists with at least the required channel capacity.
         let Some(channel_index) = find_channel_in_celldeps(
@@ -64,11 +55,11 @@ impl Verification<Context> for OrderMatch {
         };
 
         // 2. Seller must participate
-        let seller_present = has_lock_in_inputs(&match_args.seller_lock_hash)?;
-        if !seller_present {
-            debug!("Seller lock hash not found in inputs");
-            return Err(OpticrumError::SellerAuthMissing.into());
-        }
+        require_input_lock(
+            name,
+            &match_args.seller_lock_hash,
+            OpticrumError::SellerAuthMissing,
+        )?;
 
         // 3. Validate Match Cell data initialization:
         //    - rent_per_block must match the buyer's specified rate (byte compare for f64 safety)
@@ -80,24 +71,18 @@ impl Verification<Context> for OrderMatch {
         }
 
         // 4. Unoccupied capacity (rent pool) must transfer intact from Order to Match.
-        let old_unoccupied = {
-            let total = load_cell_capacity(0, Source::GroupInput)
-                .map_err(|_| OpticrumError::BadOrderMatch)?;
-            let occupied = load_cell_occupied_capacity(0, Source::GroupInput)
-                .map_err(|_| OpticrumError::BadOrderMatch)?;
-            total.saturating_sub(occupied)
-        };
-        let new_unoccupied = {
-            let total =
-                load_cell_capacity(0, Source::Output).map_err(|_| OpticrumError::BadOrderMatch)?;
-            let occupied = load_cell_occupied_capacity(0, Source::Output)
-                .map_err(|_| OpticrumError::BadOrderMatch)?;
-            total.saturating_sub(occupied)
-        };
-        if old_unoccupied != new_unoccupied {
+        //    Pre-computed by root.rs and stored in ctx.
+        if ctx.old_state.unoccupied_capacity
+            != ctx
+                .new_state
+                .as_ref()
+                .ok_or(OpticrumError::BadOrderMatch)?
+                .unoccupied_capacity
+        {
             debug!(
                 "Unoccupied capacity mismatch: order={} vs match={}",
-                old_unoccupied, new_unoccupied
+                ctx.old_state.unoccupied_capacity,
+                ctx.new_state.as_ref().unwrap().unoccupied_capacity
             );
             return Err(OpticrumError::ChannelCapacityMismatch.into());
         }
@@ -113,13 +98,10 @@ impl Verification<Context> for OrderMatch {
 
         // 6. Channel must have been created after the order.
         //    GroupInput[0] = Order cell, CellDep[channel_index] = Channel cell.
-        debug!("channel_index: {}", channel_index);
         let order_block =
             load_header(0, Source::GroupInput).map_err(|_| OpticrumError::HeaderNotSet)?;
-        debug!("order_block: {}", order_block.raw().number());
         let channel_block =
             load_header(channel_index, Source::CellDep).map_err(|_| OpticrumError::HeaderNotSet)?;
-        debug!("channel_block: {}", channel_block.raw().number());
         if channel_block.raw().number() <= order_block.raw().number() {
             debug!(
                 "Channel created at {} not after order at {}",

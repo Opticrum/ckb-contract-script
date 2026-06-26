@@ -24,8 +24,8 @@ Two Cell states discriminated by lock script `args` length:
 - **Order** (65 bytes): Fiber Pubkey (33) + Buyer Lock Hash (32)
 - **Match** (133 bytes): Order args (65) + Channel OutPoint (36) + Seller Lock Hash (32)
 
-**Order Cell data** (32 bytes): xUDT Amount (u128 LE, 16) + Channel Capacity (u64 LE, 8) + Rent Per Block (f64 LE, 8)
-**Match Cell data** (32 bytes): xUDT Amount (u128 LE, 16) + Rent Per Block (f64 LE, 8) + Last Extraction Blocknumber (u64 LE, 8)
+**Order Cell data** (32 bytes): xUDT Amount (u128 LE, 16) + Channel Capacity (u64 LE, 8) + Rent Per Block (u64 LE, 8)
+**Match Cell data** (32 bytes): xUDT Amount (u128 LE, 16) + Rent Per Block (u64 LE, 8) + Last Extraction Blocknumber (u64 LE, 8)
 
 ### Key Design Decisions
 
@@ -36,9 +36,11 @@ their funds from the Match cell (emptying it), after which the seller can destro
 the exhausted cell.
 
 **Buyer-specified `rent_per_block`.** The buyer directly specifies the per-block
-rent rate in the OrderData. There is no `AnnualYield` conversion — `rent_per_block`
-is the canonical protocol value. The total rent capacity locked up at order creation
-is chosen independently (no `escrow_blocks` constraint).
+rent rate in the OrderData. There is no on-chain `AnnualYield` conversion — `rent_per_block`
+is the canonical protocol value. An off-chain helper (`annual_yield_to_rent_per_block`)
+converts human-readable annual yield (basis points) to `rent_per_block` for convenience.
+The total rent capacity locked up at order creation is chosen independently
+(no `escrow_blocks` constraint).
 
 **Buyer can inject/withdraw.** The buyer can add (inject) or remove (withdraw)
 capacity or xUDT from a Match cell at any time, but cannot destroy it. The buyer
@@ -69,6 +71,7 @@ capacity, which is stronger than just comparing a hash.
 opticrum/
 ├── contracts/opticrum/    # On-chain RISC-V verification (no_std, ckb-cinnabar-verifier)
 │   ├── src/main.rs        # Entry: cinnabar_main! macro wiring Context + verifiers
+│   ├── src/state.rs       # Branch, OpticrumState, OpticrumPattern, Context + convenience methods
 │   ├── src/verifiers/     # Cinnabar verification tree
 │   │   ├── root.rs           # Root: inspects args length → routes to branch verifier
 │   │   ├── order_cancel.rs
@@ -80,16 +83,24 @@ opticrum/
 ├── calculator/opticrum/   # Off-chain transaction assembly (ckb-cinnabar-calculator)
 │   ├── src/lib.rs         # Module declarations, re-exports
 │   ├── src/calculator.rs  # create_order, cancel_order, match_order, extract_rent,
-│   │                      #   update_match_buyer, destroy_match
+│   │                      #   update_match_buyer, destroy_match + yield helpers
 │   ├── src/types.rs       # OrderArgs, OrderData, MatchArgs, MatchData, Xudt,
 │   │                      #   OrderInfo, MatchInfo, length constants
 │   ├── src/operation.rs   # opticrum_lock(), AddOpticrumContractCelldep Operation
-│   ├── src/reader.rs      # scan_orders, scan_matches
-│   └── src/config.rs      # OPTICRUM_CONTRACT_NAME, CKB_DECIMAL, type_id,
+│   ├── src/reader.rs      # scan_orders, scan_matches (shared scan_cells + parse_cell_prologue)
+│   └── src/config.rs      # OPTICRUM_CONTRACT_NAME, CKB_DECIMAL, BLOCKS_PER_YEAR, type_id,
 │   │                      #   ORDER_TO_MATCH_CAPACITY_RESERVE
 ├── opticrum-protocol/     # Canonical byte-level types (shared on/off chain)
 │   └── src/lib.rs         # All data layouts, length constants, serialization
 ├── src/main.rs            # CLI runner: deploy/migrate/consume via ckb_cinnabar::dispatch
+├── src/bin/               # CLI binaries
+│   ├── create_order.rs    #   Buyer creates Order
+│   ├── match_order.rs     #   Seller matches Order with channel
+│   ├── extract_liquidity_rent.rs  # Seller extracts rent
+│   ├── topup_rent.rs      #   Buyer injects rent capacity
+│   ├── decline_rent.rs    #   Buyer withdraws rent capacity
+│   ├── scan_orders.rs     #   List live Orders
+│   └── scan_matches.rs    #   List live Matches
 ├── tests/                 # Integration tests (CKB simulator + FakeRpcClient)
 ├── scripts/               # find_clang, reproducible_build_docker
 └── Makefile               # Top-level: build (contracts + crates), test, check, clippy, fmt
@@ -171,10 +182,11 @@ when accumulated rent >= remaining value.
 
 **Linear formula:** `extractable = rent_per_block × (tip_block - last_extraction_block)`
 
-`rent_per_block` is specified directly by the buyer in OrderData (no AnnualYield
-derivation). The on-chain verifier uses byte-level comparison (not `f64::==`) for
-rent_per_block preservation checks to ensure cross-platform determinism between
-hardware IEEE 754 and RISC-V soft-float.
+`rent_per_block` is specified directly by the buyer in OrderData. The on-chain verifier
+uses byte-level comparison for `rent_per_block` preservation checks to ensure cross-platform
+determinism. An off-chain convenience helper `annual_yield_to_rent_per_block(channel_capacity,
+annual_yield_bps)` converts human-readable annual yield (e.g. 500 = 5%) to `rent_per_block`
+using `BLOCKS_PER_YEAR ≈ 2,629,800`.
 
 When `accumulated_rent >= remaining_capacity`, the match is **exhausted** — the
 seller can destroy it.
@@ -184,9 +196,9 @@ seller can destroy it.
 | Type | Fields | Bytes |
 |------|--------|-------|
 | `OrderArgs` | fiber_pubkey, buyer_lock_hash | 65 |
-| `OrderData` | xudt_amount, channel_capacity, rent_per_block | 32 |
+| `OrderData` | xudt_amount (u128), channel_capacity (u64), shannons_per_block (u64) | 32 |
 | `MatchArgs` | order_args, channel_outpoint, seller_lock_hash | 133 |
-| `MatchData` | xudt_amount, rent_per_block, last_extraction_block | 32 |
+| `MatchData` | xudt_amount (u128), shannons_per_block (u64), last_extraction_block (u64) | 32 |
 | `Xudt` | amount (u128), type_script (Script) | — |
 | `OrderInfo` | order_args, order_data, xudt?, ckb_capacity, order_outpoint | — |
 | `MatchInfo` | match_args, match_data, xudt?, ckb_capacity, match_outpoint, match_current_block | — |
@@ -199,7 +211,7 @@ seller can destroy it.
 - Args parsing: `from_slice()` constructors validating lengths
 - Capacity values in shannons (1 CKB = 10^8 shannons)
 - Little-endian encoding for all integer fields in args/data
-- f64 values validated as finite and non-negative in `from_slice()`
-- f64 comparison uses byte-level (`to_le_bytes()`) for cross-platform determinism
+- All rent-related values use `u64` for cross-platform determinism (no f64)
 - `CKB_DECIMAL = 100_000_000`
+- `BLOCKS_PER_YEAR = 2_629_800`
 - `ORDER_TO_MATCH_CAPACITY_RESERVE` = 68 CKB (extra bytes for Match cell: args 133-65 + data 32-32 = 68 bytes × CKB_DECIMAL)

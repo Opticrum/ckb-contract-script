@@ -18,7 +18,7 @@ define_errors!(OpticrumError, {
     BadMatchUpdate,
     MatchNotExhausted,
     RentPerBlockMismatch,
-    MatchNotViable,
+    MatchNotViable, // reserved — preserves error code indices
 
     // General errors
     BadArgsLength,

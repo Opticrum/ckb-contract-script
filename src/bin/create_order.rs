@@ -13,7 +13,7 @@ use ckb_cinnabar::calculator::{
     TransactionCalculator,
 };
 use opticrum_calculator::{
-    calculator::create_order,
+    calculator::{annual_yield_to_rent_per_block, create_order},
     types::{CompressedPubkey, OrderArgs, OrderData},
 };
 
@@ -33,17 +33,27 @@ pub async fn main() -> eyre::Result<()> {
         h256!("0xc97b60038e61afcba164ec5a1c49d4b2e573b2c2166ff03522bd8c6dbf2c7737");
     let order_args = OrderArgs::new(fiber_pubkey, buyer_lock_hash.into());
 
-    // OrderData: xudt_amount (0 for CKB orders) + channel_capacity + rent_per_block (scaled)
+    // OrderData: xudt_amount (0 for CKB orders) + channel_capacity + rent_per_block
     let channel_capacity = 20000u64 * ONE_CKB;
-    let shannons_per_block: u64 = 1000; // 1000 shannons per block
-    let order_data = OrderData::new(0, channel_capacity, shannons_per_block);
 
-    // Total rent capacity to lock up (e.g. for ~100,000 blocks = ~10 days)
-    let rent_capacity = shannons_per_block * 100_000;
+    // 5% annual yield → rent_per_block
+    let annual_yield_bps = 500;
+    let rent_per_block = annual_yield_to_rent_per_block(channel_capacity, annual_yield_bps);
+
+    // Pre-fund for ~10 days (~100,000 blocks at 12s interval)
+    let escrow_blocks = 100_000;
+    let rent_capacity = rent_per_block.saturating_mul(escrow_blocks);
+
+    let order_data = OrderData::new(0, channel_capacity, rent_per_block);
     println!(
-        "rent capacity: {:.2} CKB (rent_per_block = {} shannons/block)",
+        "annual yield: {:.2}% → rent_per_block: {} shannons/block",
+        annual_yield_bps as f64 / 100.0,
+        rent_per_block,
+    );
+    println!(
+        "rent capacity: {:.2} CKB (escrow_blocks: {})",
         rent_capacity as f64 / ONE_CKB as f64,
-        shannons_per_block
+        escrow_blocks,
     );
 
     let prepare = DefaultInstruction::new(vec![Box::new(AddSecp256k1SighashCellDep {})]);

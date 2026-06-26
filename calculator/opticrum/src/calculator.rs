@@ -21,10 +21,46 @@ use ckb_cinnabar_calculator::{
 };
 
 use crate::{
-    config::ORDER_TO_MATCH_CAPACITY_RESERVE,
+    config::{BLOCKS_PER_YEAR, ORDER_TO_MATCH_CAPACITY_RESERVE},
     operation::{opticrum_lock, AddOpticrumContractCelldep},
-    types::{MatchArgs, MatchData, MatchInfo, OrderArgs, OrderData, OrderInfo},
+    types::{MatchArgs, MatchData, MatchInfo, OrderArgs, OrderData, OrderInfo, OutPoint},
 };
+
+// ---------------------------------------------------------------------------
+// Yield helpers — convert annual yield to on-chain rent parameters
+// ---------------------------------------------------------------------------
+
+/// Convert an annual yield (basis points) to `rent_per_block` (shannons/block).
+///
+/// Formula: `channel_capacity × yield_bps / (10_000 × blocks_per_year)`
+///
+/// * `channel_capacity` — the capacity the buyer wants the seller's channel to have
+/// * `annual_yield_bps` — annual yield in basis points (500 = 5.00%, 1000 = 10%)
+///
+/// Uses `BLOCKS_PER_YEAR` (~12s block interval, ~2.6M blocks/year).
+pub fn annual_yield_to_rent_per_block(channel_capacity: u64, annual_yield_bps: u64) -> u64 {
+    let numerator = channel_capacity as u128 * annual_yield_bps as u128;
+    let denominator = 10_000u128 * BLOCKS_PER_YEAR as u128;
+    (numerator / denominator) as u64
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+/// Build an `AddCellDep` referencing a Fiber channel cell by outpoint.
+///
+/// The channel cell is loaded with full data (`with_data: true`) so the
+/// on-chain verifier can inspect its capacity and type script.
+fn fiber_channel_celldep(outpoint: &OutPoint) -> AddCellDep {
+    AddCellDep {
+        name: "fiber_channel".into(),
+        tx_hash: outpoint.tx_hash.into(),
+        index: outpoint.index,
+        dep_type: DepType::Code,
+        with_data: true,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // 1. Create Order — buyer offers rent for inbound liquidity
@@ -183,13 +219,7 @@ pub fn match_order<T: RPC>(
         // Opticrum contract dep
         Box::new(AddOpticrumContractCelldep {}),
         // Channel Cell as CellDep (pre-created via Fiber)
-        Box::new(AddCellDep {
-            name: "fiber_channel".into(),
-            tx_hash: match_args.channel_outpoint.tx_hash.into(),
-            index: match_args.channel_outpoint.index,
-            dep_type: DepType::Code,
-            with_data: true,
-        }),
+        Box::new(fiber_channel_celldep(&match_args.channel_outpoint)),
         // HeaderDep for block where the channel was created
         Box::new(AddHeaderDepByCellDepIndex {
             celldep_index: usize::MAX,
@@ -262,13 +292,9 @@ pub fn extract_rent<T: RPC>(
 
     let mut operations: Vec<Box<dyn Operation<T>>> = vec![
         Box::new(AddOpticrumContractCelldep {}),
-        Box::new(AddCellDep {
-            name: "fiber_channel".into(),
-            tx_hash: match_info.match_args.channel_outpoint.tx_hash.into(),
-            index: match_info.match_args.channel_outpoint.index,
-            dep_type: DepType::Code,
-            with_data: true,
-        }),
+        Box::new(fiber_channel_celldep(
+            &match_info.match_args.channel_outpoint,
+        )),
         Box::new(AddHeaderDepByBlockNumber {
             block_number: tip_block,
         }),
@@ -283,7 +309,12 @@ pub fn extract_rent<T: RPC>(
     ];
 
     if match_info.match_data.last_extraction_block == 0 {
-        // Match cell is at input_index 0 (added first above)
+        // First extraction — need the match creation block header to compute
+        // elapsed blocks. We use AddHeaderDepByInputIndex because the match
+        // cell was just added as an input and its header IS the creation block.
+        // In destroy_match we use AddHeaderDepByBlockNumber instead because
+        // the match cell may have been extracted from, so its input header is
+        // not necessarily the creation block — but here it's guaranteed fresh.
         operations.push(Box::new(AddHeaderDepByInputIndex {
             input_index: usize::MAX,
         }));
@@ -292,7 +323,7 @@ pub fn extract_rent<T: RPC>(
     let rent_extraction = match_info.extraction_amount(tip_block);
     let mut new_match_data = match_info.match_data;
     new_match_data.last_extraction_block = tip_block;
-    new_match_data.xudt_amount = 0;
+
     if let Some(ref x) = match_info.xudt {
         new_match_data.xudt_amount = x.amount.saturating_sub(rent_extraction as u128);
         operations.push(Box::new(AddOutputCellByInputIndex {
@@ -303,6 +334,7 @@ pub fn extract_rent<T: RPC>(
             adjust_capacity: CapacityAdjustment::Keep,
         }));
     } else {
+        new_match_data.xudt_amount = 0;
         operations.push(Box::new(AddOutputCellByInputIndex {
             input_index: usize::MAX,
             data: Some(new_match_data.to_bytes().to_vec()),
@@ -427,6 +459,13 @@ pub fn destroy_match<T: RPC>(
     ];
 
     if match_info.match_data.last_extraction_block == 0 {
+        // First (and only) destruction — need the match creation block header
+        // to verify exhaustion. We use AddHeaderDepByBlockNumber because the
+        // match cell may have been extracted from, so its input header is not
+        // necessarily the creation block. Using the stored block_number is
+        // more reliable here. In extract_rent we use AddHeaderDepByInputIndex
+        // instead because the match is fresh and the input header IS the
+        // creation block.
         operations.push(Box::new(AddHeaderDepByBlockNumber {
             block_number: match_info.match_current_block,
         }));

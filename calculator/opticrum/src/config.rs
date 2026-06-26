@@ -13,6 +13,10 @@ use opticrum_protocol::{MATCH_ARGS_LEN, MATCH_DATA_LEN, ORDER_ARGS_LEN, ORDER_DA
 pub const OPTICRUM_CONTRACT_NAME: &str = "opticrum";
 pub const CKB_DECIMAL: u64 = 100_000_000;
 
+/// Approximate blocks per year for CKB (~12s block interval).
+/// 365.25 × 24 × 3600 / 12 ≈ 2,629,800
+pub const BLOCKS_PER_YEAR: u64 = 2_629_800;
+
 /// Extra capacity (shannons) pre-funded on Order cells above rent so Order→Match
 /// with `CapacityAdjustment::Keep` succeeds without the seller injecting CKB.
 ///

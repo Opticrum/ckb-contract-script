@@ -51,7 +51,7 @@ pub async fn main() -> eyre::Result<()> {
             m.match_data.last_extraction_block
         );
         println!("  match_current_block: {}", m.match_current_block);
-        println!();
+        println!("\n");
     }
 
     Ok(())

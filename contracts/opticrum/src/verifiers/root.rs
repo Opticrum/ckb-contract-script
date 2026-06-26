@@ -6,8 +6,8 @@ use ckb_std::{ckb_constants::Source, debug, high_level::load_cell_lock};
 
 use crate::{
     error::OpticrumError,
+    state::{Branch, Context, OpticrumPattern, OpticrumState},
     utils::{find_opticrum_script, get_unoccupied_capacity, parse_xudt},
-    Branch, Context, OpticrumPattern, OpticrumState,
 };
 
 /// Root verifier: inspects args length to determine Order vs Match state,

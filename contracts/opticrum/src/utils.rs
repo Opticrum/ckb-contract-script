@@ -12,8 +12,7 @@ use ckb_std::{
     debug,
     high_level::{
         load_cell_capacity, load_cell_data, load_cell_lock, load_cell_lock_hash,
-        load_cell_occupied_capacity, load_cell_type, load_cell_type_hash, load_header,
-        load_transaction, QueryIter,
+        load_cell_occupied_capacity, load_cell_type, load_header, load_transaction, QueryIter,
     },
 };
 
@@ -60,9 +59,22 @@ pub fn load_header_block_number(index: usize) -> Result<u64> {
 // ---------------------------------------------------------------------------
 
 /// Check if a lock hash (raw bytes) appears in any tx input's lock script.
-pub fn has_lock_in_inputs(lock_hash: &[u8]) -> Result<bool> {
+pub fn has_input_lock(lock_hash: &[u8]) -> Result<bool> {
     let found = QueryIter::new(load_cell_lock_hash, Source::Input).any(|hash| hash == lock_hash);
     Ok(found)
+}
+
+/// Require that a lock hash appears in at least one transaction input.
+///
+/// Returns `Ok(())` when the lock is found. When absent, emits a debug
+/// message and returns the supplied error.
+pub fn require_input_lock(name: &str, lock_hash: &[u8], error: OpticrumError) -> Result<()> {
+    let present = has_input_lock(lock_hash)?;
+    if !present {
+        debug!("[{name}] Required lock hash not found in inputs");
+        return Err(error.into());
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -74,31 +86,6 @@ fn is_fiber_funding_contract(hash: &[u8; 32]) -> bool {
     *hash == FIBER_FUNDING_TYPE_ID_TESTNET
         || *hash == FIBER_FUNDING_TYPE_ID_MAINNET
         || *hash == FIBER_FUNDING_TYPE_ID_MOCK
-}
-
-/// Find the CellDep index of a channel cell matching `channel_outpoint`.
-///
-/// Outpoints are read from the transaction `cell_deps` table via `load_transaction`.
-/// `load_input_out_point` only works for inputs, not cell deps.
-///
-/// When the mock type hash is not the all-zero wildcard, also requires a Fiber
-/// funding type script on the cell.
-#[allow(dead_code)]
-pub fn find_channel_celldep_index(channel_outpoint: &OutPoint) -> Option<usize> {
-    let tx = load_transaction().ok()?;
-    for (i, dep) in tx.raw().cell_deps().into_iter().enumerate() {
-        if !channel_outpoint.matches(&dep.out_point()) {
-            continue;
-        }
-        if FIBER_FUNDING_TYPE_ID_MOCK != [0u8; 32] {
-            let hash = load_cell_type_hash(i, Source::CellDep).ok()??;
-            if !is_fiber_funding_contract(&hash) {
-                continue;
-            }
-        }
-        return Some(i);
-    }
-    None
 }
 
 /// Find a cell in CellDeps matching the given channel outpoint and type.
