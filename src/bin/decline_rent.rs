@@ -42,7 +42,7 @@ pub async fn main() -> eyre::Result<()> {
     let rpc = RpcClient::new_testnet();
 
     // Scan for matches, pick one by index
-    let matches = scan_matches(&rpc).await?;
+    let matches = scan_matches(&rpc, None).await?;
     let match_info = matches
         .get(match_index)
         .expect("No match at that index — run scan_matches first");

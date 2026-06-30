@@ -2,12 +2,19 @@ use ckb_cinnabar::calculator::{
     re_exports::{ckb_sdk::constants::ONE_CKB, ckb_types::prelude::hex_string, eyre, tokio},
     rpc::RpcClient,
 };
-use opticrum_calculator::reader::scan_orders;
+use opticrum_calculator::{
+    calculator::rent_per_block_to_annual_yield,
+    reader::scan_orders,
+    types::CompressedPubkey,
+};
 
 #[tokio::main]
 pub async fn main() -> eyre::Result<()> {
     let rpc = RpcClient::new_testnet();
-    let orders = scan_orders(&rpc).await?;
+    let fiber_key = CompressedPubkey::from_slice(&hex::decode(
+        "025bfeb476486c0464cb440c3ef2033fc34f0dd9b436579d4eceb430960633573f",
+    )?);
+    let orders = scan_orders(&rpc, fiber_key.ok()).await?;
 
     println!("Found {} Order cells:\n", orders.len());
 
@@ -33,6 +40,13 @@ pub async fn main() -> eyre::Result<()> {
         println!(
             "  rent_per_block: {:.0} shannons/block",
             o.order_data.shannons_per_block
+        );
+        println!(
+            "  annual_yield: {:.2}%",
+            rent_per_block_to_annual_yield(
+                o.order_data.shannons_per_block,
+                o.order_data.channel_capacity
+            ) * 100.0
         );
         println!(
             "  rent_capacity: {} CKB",

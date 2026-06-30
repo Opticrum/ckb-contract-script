@@ -23,7 +23,7 @@ pub async fn main() -> eyre::Result<()> {
     let tip_block: u64 = rpc.get_tip_block_number().await?.into();
 
     // Scan for matches, pick one by index
-    let matches = scan_matches(&rpc).await?;
+    let matches = scan_matches(&rpc, None).await?;
     let match_info = matches
         .get(match_index)
         .expect("No match at that index — run scan_orders first");

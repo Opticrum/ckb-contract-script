@@ -454,7 +454,7 @@ async fn test_scan_orders() -> eyre::Result<()> {
         &order_data,
         faker::RENT_CAPACITY,
     )?;
-    let orders = scan_orders(&rpc).await?;
+    let orders = scan_orders(&rpc, None).await?;
     assert_eq!(orders.len(), 1, "should find one Order cell");
     Ok(())
 }
@@ -477,7 +477,7 @@ async fn test_scan_matches() -> eyre::Result<()> {
         faker::RENT_CAPACITY,
         1,
     )?;
-    let matches = scan_matches(&rpc).await?;
+    let matches = scan_matches(&rpc, None).await?;
     assert_eq!(matches.len(), 1, "should find one Match cell");
     Ok(())
 }

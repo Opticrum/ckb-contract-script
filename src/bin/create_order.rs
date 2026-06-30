@@ -26,7 +26,7 @@ pub async fn main() -> eyre::Result<()> {
 
     // OrderArgs: fiber_pubkey (33 bytes) + buyer_lock_hash (32 bytes)
     let fiber_pubkey = CompressedPubkey::from_slice(&hex::decode(
-        "028db409b3f88502105c58cf698d0f16c13d5cb167f4c968973a356776f0e03f9e",
+        "025bfeb476486c0464cb440c3ef2033fc34f0dd9b436579d4eceb430960633573f",
     )?)
     .unwrap();
     let buyer_lock_hash =
@@ -37,8 +37,8 @@ pub async fn main() -> eyre::Result<()> {
     let channel_capacity = 20000u64 * ONE_CKB;
 
     // 5% annual yield → rent_per_block
-    let annual_yield_bps = 500;
-    let rent_per_block = annual_yield_to_rent_per_block(channel_capacity, annual_yield_bps);
+    let annual_yield = 0.05;
+    let rent_per_block = annual_yield_to_rent_per_block(channel_capacity, annual_yield);
 
     // Pre-fund for ~10 days (~100,000 blocks at 12s interval)
     let escrow_blocks = 100_000;
@@ -47,7 +47,7 @@ pub async fn main() -> eyre::Result<()> {
     let order_data = OrderData::new(0, channel_capacity, rent_per_block);
     println!(
         "annual yield: {:.2}% → rent_per_block: {} shannons/block",
-        annual_yield_bps as f64 / 100.0,
+        annual_yield * 100.0,
         rent_per_block,
     );
     println!(

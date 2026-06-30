@@ -20,7 +20,10 @@ use ckb_cinnabar_calculator::{
 
 use crate::{
     config::opticrum_contract_type_id,
-    types::{MatchArgs, MatchData, MatchInfo, OrderArgs, OrderData, OrderInfo, OutPoint, Xudt},
+    types::{
+        CompressedPubkey, MatchArgs, MatchData, MatchInfo, OrderArgs, OrderData, OrderInfo, OutPoint,
+        Xudt,
+    },
 };
 
 // ---------------------------------------------------------------------------
@@ -49,10 +52,19 @@ fn resolve_opticrum_code_hash<T: RPC>(rpc: &T) -> [u8; 32] {
 }
 
 /// Build a `CellQueryOptions` for scanning cells locked by the Opticrum
-/// script, optionally narrowed to a specific args length.
-async fn opticrum_query<T: RPC>(rpc: &T) -> eyre::Result<CellQueryOptions> {
+/// script.
+///
+/// When `args_prefix` is `Some`, it is set as the lock script args so the
+/// indexer's prefix search only returns cells whose lock args start with
+/// those bytes. For both Order and Match cells, the first 33 bytes are the
+/// buyer's Fiber pubkey, so passing a pubkey here filters to a single buyer.
+async fn opticrum_query<T: RPC>(
+    rpc: &T,
+    args_prefix: Option<Vec<u8>>,
+) -> eyre::Result<CellQueryOptions> {
     let code_hash = resolve_opticrum_code_hash(rpc);
-    let lock_script = ScriptEx::new_type(code_hash.into(), vec![]);
+    let lock_args = args_prefix.unwrap_or_default();
+    let lock_script = ScriptEx::new_type(code_hash.into(), lock_args);
 
     let mut query = CellQueryOptions::new_lock(lock_script.to_script_unchecked());
     query.script_search_mode = Some(SearchMode::Prefix);
@@ -66,11 +78,15 @@ async fn opticrum_query<T: RPC>(rpc: &T) -> eyre::Result<CellQueryOptions> {
 
 /// Iterate all cells locked by the Opticrum script and parse them with
 /// the provided function. Silently skips cells that fail to parse.
+///
+/// `args_prefix` is forwarded to [`opticrum_query`] to narrow results
+/// at the indexer level (e.g. by buyer Fiber pubkey).
 async fn scan_cells<T: RPC, U>(
     rpc: &T,
+    args_prefix: Option<Vec<u8>>,
     parse_fn: impl Fn(&LiveCell) -> eyre::Result<U>,
 ) -> eyre::Result<Vec<U>> {
-    let query = opticrum_query(rpc).await?;
+    let query = opticrum_query(rpc, args_prefix).await?;
     let search_key = query.into();
     let mut results = Vec::new();
     let mut iter = GetCellsIter::new(rpc, search_key);
@@ -184,11 +200,27 @@ fn parse_match_cell(cell: &LiveCell) -> eyre::Result<MatchInfo> {
 // ---------------------------------------------------------------------------
 
 /// Scan all live Order cells on-chain.
-pub async fn scan_orders<T: RPC>(rpc: &T) -> eyre::Result<Vec<OrderInfo>> {
-    scan_cells(rpc, parse_order_cell).await
+///
+/// When `fiber_pubkey` is `Some`, the indexer query is narrowed to cells
+/// whose lock args start with the given pubkey (the first 33 bytes of both
+/// Order and Match args). Pass `None` to return all orders.
+pub async fn scan_orders<T: RPC>(
+    rpc: &T,
+    fiber_pubkey: Option<CompressedPubkey>,
+) -> eyre::Result<Vec<OrderInfo>> {
+    let args_prefix = fiber_pubkey.map(|pk| pk.to_bytes().to_vec());
+    scan_cells(rpc, args_prefix, parse_order_cell).await
 }
 
 /// Scan all live Match cells on-chain.
-pub async fn scan_matches<T: RPC>(rpc: &T) -> eyre::Result<Vec<MatchInfo>> {
-    scan_cells(rpc, parse_match_cell).await
+///
+/// When `fiber_pubkey` is `Some`, the indexer query is narrowed to cells
+/// whose lock args start with the given pubkey (the first 33 bytes of both
+/// Order and Match args). Pass `None` to return all matches.
+pub async fn scan_matches<T: RPC>(
+    rpc: &T,
+    fiber_pubkey: Option<CompressedPubkey>,
+) -> eyre::Result<Vec<MatchInfo>> {
+    let args_prefix = fiber_pubkey.map(|pk| pk.to_bytes().to_vec());
+    scan_cells(rpc, args_prefix, parse_match_cell).await
 }

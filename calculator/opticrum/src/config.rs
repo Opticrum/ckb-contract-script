@@ -6,7 +6,6 @@
 use ckb_cinnabar_calculator::{
     re_exports::ckb_types::{h256, H256},
     rpc::Network,
-    simulation::random_hash,
 };
 use opticrum_protocol::{MATCH_ARGS_LEN, MATCH_DATA_LEN, ORDER_ARGS_LEN, ORDER_DATA_LEN};
 
@@ -35,6 +34,8 @@ pub fn opticrum_contract_type_id(network: Network) -> H256 {
         Network::Mainnet => {
             unimplemented!("Mainnet type_id not implemented")
         }
-        _ => random_hash().into(),
+        Network::Custom(_) => {
+            unimplemented!("Custom network not implemented")
+        }
     }
 }

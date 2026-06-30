@@ -47,7 +47,7 @@ pub async fn main() -> eyre::Result<()> {
     let rpc = RpcClient::new_testnet();
 
     // Scan for orders, pick one by index
-    let orders = scan_orders(&rpc).await?;
+    let orders = scan_orders(&rpc, None).await?;
     let order = orders
         .get(order_index)
         .expect("No order at that index — run scan_orders first");

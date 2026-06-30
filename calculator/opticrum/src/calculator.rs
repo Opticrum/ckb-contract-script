@@ -30,18 +30,35 @@ use crate::{
 // Yield helpers — convert annual yield to on-chain rent parameters
 // ---------------------------------------------------------------------------
 
-/// Convert an annual yield (basis points) to `rent_per_block` (shannons/block).
+/// Convert an annual yield to `rent_per_block` (shannons/block).
 ///
-/// Formula: `channel_capacity × yield_bps / (10_000 × blocks_per_year)`
+/// Formula: `channel_capacity × annual_yield / blocks_per_year`
 ///
 /// * `channel_capacity` — the capacity the buyer wants the seller's channel to have
-/// * `annual_yield_bps` — annual yield in basis points (500 = 5.00%, 1000 = 10%)
+/// * `annual_yield` — annual yield in percentage (5.00% = 0.05, 10.00% = 0.10)
 ///
 /// Uses `BLOCKS_PER_YEAR` (~12s block interval, ~2.6M blocks/year).
-pub fn annual_yield_to_rent_per_block(channel_capacity: u64, annual_yield_bps: u64) -> u64 {
-    let numerator = channel_capacity as u128 * annual_yield_bps as u128;
-    let denominator = 10_000u128 * BLOCKS_PER_YEAR as u128;
-    (numerator / denominator) as u64
+pub fn annual_yield_to_rent_per_block(channel_capacity: u64, annual_yield: f64) -> u64 {
+    let revenue = channel_capacity as f64 * annual_yield;
+    (revenue / BLOCKS_PER_YEAR as f64) as u64
+}
+
+/// Convert `rent_per_block` (shannons/block) back to an annual yield (decimal).
+///
+/// Formula (reverse of `annual_yield_to_rent_per_block`):
+///   `rent_per_block × blocks_per_year / capacity`
+///
+/// * `rent_per_block` — per-block rent rate in shannons
+/// * `capacity` — the capacity the yield is calculated against (channel capacity)
+///
+/// Returns a decimal: 0.05 = 5%, 0.10 = 10%. Returns 0.0 if `capacity` is 0.
+///
+/// Uses `BLOCKS_PER_YEAR` (~12s block interval, ~2.6M blocks/year).
+pub fn rent_per_block_to_annual_yield(rent_per_block: u64, capacity: u64) -> f64 {
+    if capacity == 0 {
+        return 0.0;
+    }
+    (rent_per_block as f64 * BLOCKS_PER_YEAR as f64) / capacity as f64
 }
 
 // ---------------------------------------------------------------------------
