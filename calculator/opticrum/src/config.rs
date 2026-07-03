@@ -35,7 +35,7 @@ pub fn opticrum_contract_type_id(network: Network) -> H256 {
             unimplemented!("Mainnet type_id not implemented")
         }
         Network::Custom(_) => {
-            unimplemented!("Custom network not implemented")
+            unimplemented!("Custom network not implemented — server must resolve to Testnet or Mainnet")
         }
     }
 }

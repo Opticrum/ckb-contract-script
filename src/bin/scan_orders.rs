@@ -3,9 +3,7 @@ use ckb_cinnabar::calculator::{
     rpc::RpcClient,
 };
 use opticrum_calculator::{
-    calculator::rent_per_block_to_annual_yield,
-    reader::scan_orders,
-    types::CompressedPubkey,
+    calculator::rent_per_block_to_annual_yield, reader::scan_orders, types::CompressedPubkey,
 };
 
 #[tokio::main]

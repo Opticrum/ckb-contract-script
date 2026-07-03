@@ -31,7 +31,7 @@ pub async fn main() -> eyre::Result<()> {
     let seller_lock_hash =
         h256!("0x48c1f38d2cad56462319ec5a2b241e0c49e483eb9e5225e77de0359b1c9e60e1");
     let channel_tx_hash =
-        h256!("0x74b41bedb5f0f9add71bcbff7f822f916781e356fdd016e195305f6e85956983");
+        h256!("0xe76767afadcacf3a1137274346f35f0f3ad109b398e6c389ed7f3086021091cb");
     let channel_index: u32 = 0;
     let order_index: usize = 2; // pick which scanned order to match
 
@@ -68,11 +68,11 @@ pub async fn main() -> eyre::Result<()> {
         seller_lock_hash.into(),
     );
 
-    let prepare = DefaultInstruction::new(vec![Box::new(AddSecp256k1SighashCellDep {})]);
     let match_tx = match_order::<RpcClient>(seller_address.clone(), order.clone(), match_args);
+    let complete = DefaultInstruction::new(vec![Box::new(AddSecp256k1SighashCellDep {})]);
     let balance = balance_and_sign(&seller_address, seller_key, 1000);
 
-    let (tx, _) = TransactionCalculator::new(vec![prepare, match_tx, balance])
+    let (tx, _) = TransactionCalculator::new(vec![match_tx, complete, balance])
         .new_skeleton(&rpc)
         .await?;
 

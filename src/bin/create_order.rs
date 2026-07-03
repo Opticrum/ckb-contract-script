@@ -34,7 +34,7 @@ pub async fn main() -> eyre::Result<()> {
     let order_args = OrderArgs::new(fiber_pubkey, buyer_lock_hash.into());
 
     // OrderData: xudt_amount (0 for CKB orders) + channel_capacity + rent_per_block
-    let channel_capacity = 20000u64 * ONE_CKB;
+    let channel_capacity = 10000u64 * ONE_CKB;
 
     // 5% annual yield → rent_per_block
     let annual_yield = 0.05;

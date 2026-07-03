@@ -21,8 +21,8 @@ use ckb_cinnabar_calculator::{
 use crate::{
     config::opticrum_contract_type_id,
     types::{
-        CompressedPubkey, MatchArgs, MatchData, MatchInfo, OrderArgs, OrderData, OrderInfo, OutPoint,
-        Xudt,
+        CompressedPubkey, MatchArgs, MatchData, MatchInfo, OrderArgs, OrderData, OrderInfo,
+        OutPoint, Xudt,
     },
 };
 
