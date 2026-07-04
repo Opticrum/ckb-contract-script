@@ -56,11 +56,7 @@ pub async fn main() -> eyre::Result<()> {
         );
     }
 
-    let current_xudt = match_info
-        .xudt
-        .as_ref()
-        .map(|x| x.amount)
-        .unwrap_or(0);
+    let current_xudt = match_info.xudt.as_ref().map(|x| x.amount).unwrap_or(0);
 
     println!(
         "Declining rent from match: {}:{}",

@@ -50,6 +50,9 @@ pub async fn main() -> eyre::Result<()> {
             "  rent_capacity: {} CKB",
             o.ckb_capacity as f64 / ONE_CKB as f64
         );
+        if let Some(ref addr) = o.fiber_address {
+            println!("  fiber_address: {}", addr);
+        }
         if let Some(ref x) = o.xudt {
             println!("  xudt_amount: {}", x.amount);
         }

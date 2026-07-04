@@ -7,10 +7,12 @@
 use ckb_cinnabar_calculator::{
     indexer::{CellQueryOptions, LiveCell, SearchMode},
     re_exports::{
+        ckb_jsonrpc_types::Either,
         ckb_types::{
             core::{Capacity, ScriptHashType},
-            packed::{CellOutput, Script},
+            packed::{CellOutput, Script, WitnessArgs},
             prelude::*,
+            H256,
         },
         eyre::{self, eyre},
     },
@@ -165,6 +167,7 @@ fn parse_order_cell(cell: &LiveCell) -> eyre::Result<OrderInfo> {
         xudt,
         ckb_capacity,
         order_outpoint: base.outpoint,
+        fiber_address: None, // enriched later in scan_orders via fetch_fiber_address
     })
 }
 
@@ -196,6 +199,64 @@ fn parse_match_cell(cell: &LiveCell) -> eyre::Result<MatchInfo> {
 }
 
 // ---------------------------------------------------------------------------
+// Fiber address extraction from creation transaction witnesses
+// ---------------------------------------------------------------------------
+
+/// Fetch the buyer's Fiber node address from the creation transaction witness.
+///
+/// The address is stored in the `output_type` field of the `WitnessArgs` at
+/// position `witnesses[input_count + output_index]` in the order's creation
+/// transaction. Returns `None` if the transaction is unavailable, the witness
+/// is missing, or the data is not valid UTF-8.
+async fn fetch_fiber_address<T: RPC>(
+    rpc: &T,
+    tx_hash: &[u8; 32],
+    output_index: u32,
+) -> Option<String> {
+    // Resolve the transaction hash
+    let hash = H256::from_slice(tx_hash).ok()?;
+
+    // Fetch the creation transaction
+    let tx_response = rpc.get_transaction(&hash).await.ok()??;
+    let tx_format = tx_response.transaction?;
+
+    // ResponseFormat.inner is Either<TransactionView, JsonBytes>
+    // Extract the TransactionView (JSON format — the common case)
+    let tx_view = match tx_format.inner {
+        Either::Left(view) => view,
+        Either::Right(_hex) => return None, // hex format not supported here
+    };
+
+    // The witness index follows the output_type convention:
+    // witnesses[input_count + output_index]
+    // tx_view.inner is ckb_jsonrpc_types::Transaction
+    let input_count = tx_view.inner.inputs.len();
+    let witness_index = input_count + output_index as usize;
+
+    let raw_bytes = tx_view
+        .inner
+        .witnesses
+        .get(witness_index)?
+        .as_bytes()
+        .to_vec();
+
+    if raw_bytes.is_empty() {
+        return None;
+    }
+
+    // Parse the WitnessArgs molecule to extract the output_type field
+    let witness_args = WitnessArgs::from_slice(&raw_bytes).ok()?;
+    let output_type_opt = witness_args.output_type().to_opt()?;
+    let output_type_bytes = output_type_opt.raw_data().to_vec();
+
+    if output_type_bytes.is_empty() {
+        return None;
+    }
+
+    String::from_utf8(output_type_bytes.to_vec()).ok()
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -204,12 +265,29 @@ fn parse_match_cell(cell: &LiveCell) -> eyre::Result<MatchInfo> {
 /// When `fiber_pubkey` is `Some`, the indexer query is narrowed to cells
 /// whose lock args start with the given pubkey (the first 33 bytes of both
 /// Order and Match args). Pass `None` to return all orders.
+///
+/// Each order is enriched with the buyer's Fiber node address (multiaddr)
+/// extracted from the creation transaction's output_type witness when
+/// available.
 pub async fn scan_orders<T: RPC>(
     rpc: &T,
     fiber_pubkey: Option<CompressedPubkey>,
 ) -> eyre::Result<Vec<OrderInfo>> {
     let args_prefix = fiber_pubkey.map(|pk| pk.to_bytes().to_vec());
-    scan_cells(rpc, args_prefix, parse_order_cell).await
+    let mut orders = scan_cells(rpc, args_prefix, parse_order_cell).await?;
+
+    // Enrich with fiber addresses from creation transaction witnesses
+    for order in &mut orders {
+        let address = fetch_fiber_address(
+            rpc,
+            &order.order_outpoint.tx_hash,
+            order.order_outpoint.index,
+        )
+        .await;
+        order.fiber_address = address;
+    }
+
+    Ok(orders)
 }
 
 /// Scan all live Match cells on-chain.

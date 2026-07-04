@@ -56,10 +56,8 @@ pub async fn main() -> eyre::Result<()> {
                     let capacity: u64 = cell_info.output.capacity.into();
                     println!(
                         "  annual_yield: {:.2}%",
-                        rent_per_block_to_annual_yield(
-                            m.match_data.shannons_per_block,
-                            capacity
-                        ) * 100.0
+                        rent_per_block_to_annual_yield(m.match_data.shannons_per_block, capacity)
+                            * 100.0
                     );
                 } else {
                     println!("  annual_yield: unknown (channel cell not live)");

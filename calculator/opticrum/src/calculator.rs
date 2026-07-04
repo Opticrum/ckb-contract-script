@@ -22,7 +22,7 @@ use ckb_cinnabar_calculator::{
 
 use crate::{
     config::{BLOCKS_PER_YEAR, ORDER_TO_MATCH_CAPACITY_RESERVE},
-    operation::{opticrum_lock, AddOpticrumContractCelldep},
+    operation::{opticrum_lock, AddOpticrumContractCelldep, SetOutputWitness},
     types::{MatchArgs, MatchData, MatchInfo, OrderArgs, OrderData, OrderInfo, OutPoint},
 };
 
@@ -111,6 +111,7 @@ pub fn create_order<T: RPC>(
     order_data: &OrderData,
     rent_capacity: u64,
     xudt_type_script: Option<Script>,
+    fiber_address: Option<String>,
 ) -> Instruction<T> {
     let args = order_args.to_bytes().to_vec();
 
@@ -150,6 +151,13 @@ pub fn create_order<T: RPC>(
             capacity: rent_capacity,
             absolute_capacity: false,
             type_id: false,
+        }));
+    }
+
+    if let Some(fiber_address) = fiber_address {
+        operations.push(Box::new(SetOutputWitness {
+            output_index: 0,
+            data: fiber_address.into_bytes(),
         }));
     }
 

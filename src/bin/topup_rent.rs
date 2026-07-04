@@ -56,11 +56,7 @@ pub async fn main() -> eyre::Result<()> {
         );
     }
 
-    let current_xudt = match_info
-        .xudt
-        .as_ref()
-        .map(|x| x.amount)
-        .unwrap_or(0);
+    let current_xudt = match_info.xudt.as_ref().map(|x| x.amount).unwrap_or(0);
 
     println!(
         "Topping up match: {}:{}",
@@ -90,7 +86,10 @@ pub async fn main() -> eyre::Result<()> {
         .await?;
 
     let tx_hash = tx.send_and_wait(&rpc, 0, None).await?;
-    println!("Rent topped up! Tx hash: {}", hex_string(tx_hash.as_bytes()));
+    println!(
+        "Rent topped up! Tx hash: {}",
+        hex_string(tx_hash.as_bytes())
+    );
 
     Ok(())
 }

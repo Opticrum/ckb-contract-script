@@ -37,6 +37,10 @@ pub struct OrderInfo {
     pub xudt: Option<Xudt>,
     pub ckb_capacity: u64,
     pub order_outpoint: OutPoint,
+    /// Optional Fiber node network address (multiaddr) extracted from the
+    /// creation transaction's output_type witness. `None` when the order
+    /// was created without an address or the witness is missing.
+    pub fiber_address: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

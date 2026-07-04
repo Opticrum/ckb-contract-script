@@ -4,6 +4,7 @@
 //! against the compiled RISC-V binary.
 
 use ckb_cinnabar_calculator::{
+    operation::Log,
     re_exports::eyre,
     simulation::{FakeRpcClient, TransactionSimulator, DEFUALT_MAX_CYCLES},
 };
@@ -23,20 +24,66 @@ use crate::faker;
 #[tokio::test]
 async fn test_create_order() -> eyre::Result<()> {
     let mut rpc = FakeRpcClient::default();
-    let skeleton = faker::celldeps_prepared_skeleton(&rpc).await?;
+    let mut skeleton = faker::celldeps_prepared_skeleton(&rpc).await?;
     faker::seed_user_cell(&mut rpc, 200_000_000_000);
 
     let buyer = faker::fake_address();
     let order_args = OrderArgs::new(faker::fiber_pubkey(), faker::user_lock_hash());
     let order_data = OrderData::new(0, faker::CHANNEL_CAPACITY, faker::SHANNONS_PER_BLOCK);
-    let instruction = create_order(buyer, &order_args, &order_data, faker::RENT_CAPACITY, None);
+    let fiber_addr = "/ip4/192.168.1.1/tcp/9735/p2p/12D3KooWTest".to_string();
 
+    let instruction = create_order(
+        buyer,
+        &order_args,
+        &order_data,
+        faker::RENT_CAPACITY,
+        None,
+        Some(fiber_addr.clone()),
+    );
+
+    // Run the instruction manually so we can inspect the skeleton's witnesses
+    let mut log = Log::new();
+    instruction.run(&rpc, &mut skeleton, &mut log).await?;
+
+    // The order cell is output_index 0.
+    // input_count is 1 (the buyer cell added by AddInputCellByAddress).
+    // Witness slot: witnesses[input_count + output_index] = witnesses[1]
+    let output_index = 0usize;
+    let witness_index = skeleton.inputs.len() + output_index;
+    assert!(
+        witness_index < skeleton.witnesses.len(),
+        "expected witness at index {}, but only {} witnesses exist",
+        witness_index,
+        skeleton.witnesses.len()
+    );
+
+    let witness = &skeleton.witnesses[witness_index];
+    assert!(
+        !witness.empty,
+        "witness at index {} should not be empty when fiber_address is set",
+        witness_index
+    );
+    assert!(
+        witness.lock.is_empty(),
+        "output_type witness should have empty lock field"
+    );
+    assert!(
+        witness.input_type.is_empty(),
+        "output_type witness should have empty input_type field"
+    );
+    assert_eq!(
+        witness.output_type,
+        fiber_addr.as_bytes().to_vec(),
+        "fiber address should be stored in output_type field"
+    );
+
+    // Also verify the transaction passes on-chain verification
     let cycle = TransactionSimulator::default()
         .skeleton(skeleton)
         .link_cell_to_header(rpc.get_outpoint_to_headers())
-        .async_verify(&rpc, vec![instruction], DEFUALT_MAX_CYCLES)
+        .async_verify(&rpc, vec![], DEFUALT_MAX_CYCLES)
         .await?;
-    println!("create_order cycle: {}", cycle);
+    println!("create_order_with_fiber_address cycle: {}", cycle);
     Ok(())
 }
 

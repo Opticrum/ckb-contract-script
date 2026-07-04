@@ -7,7 +7,7 @@ use ckb_cinnabar_calculator::{
     operation::{basic::AddCellDepByTypeId, Log, Operation},
     re_exports::{async_trait::async_trait, ckb_types::core::DepType, eyre},
     rpc::RPC,
-    skeleton::{ScriptEx, TransactionSkeleton},
+    skeleton::{ScriptEx, TransactionSkeleton, WitnessEx},
 };
 
 use crate::config::{opticrum_contract_type_id, OPTICRUM_CONTRACT_NAME};
@@ -43,5 +43,44 @@ impl<T: RPC> Operation<T> for AddOpticrumContractCelldep {
         })
         .run(rpc, skeleton, log)
         .await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output-type witness helper — for off-chain metadata
+// ---------------------------------------------------------------------------
+
+/// Sets a witness entry at `witnesses[input_count + output_index]` with the
+/// given `output_type` bytes.
+///
+/// Used to attach the buyer's Fiber node address (multiaddr) to the order
+/// creation transaction so sellers can discover it when scanning orders.
+///
+/// Must run **after** all inputs are added (i.e., after balance) because the
+/// witness index depends on the final input count.
+pub struct SetOutputWitness {
+    pub output_index: usize,
+    pub data: Vec<u8>,
+}
+
+#[async_trait(?Send)]
+impl<T: RPC> Operation<T> for SetOutputWitness {
+    async fn run(
+        self: Box<Self>,
+        _rpc: &T,
+        skeleton: &mut TransactionSkeleton,
+        _log: &mut Log,
+    ) -> eyre::Result<()> {
+        let witness_index = skeleton.inputs.len() + self.output_index;
+
+        // Pad with default witnesses if the vec isn't long enough yet
+        while skeleton.witnesses.len() <= witness_index {
+            skeleton.witnesses.push(WitnessEx::default());
+        }
+
+        let witness = &mut skeleton.witnesses[witness_index];
+        witness.output_type = self.data;
+        witness.empty = false;
+        Ok(())
     }
 }

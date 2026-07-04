@@ -56,6 +56,9 @@ pub async fn main() -> eyre::Result<()> {
         escrow_blocks,
     );
 
+    // Optional: attach the buyer's Fiber node address so sellers can connect
+    let fiber_address: Option<String> = None; // Set to Some("/ip4/.../tcp/.../p2p/...") to advertise
+
     let prepare = DefaultInstruction::new(vec![Box::new(AddSecp256k1SighashCellDep {})]);
     let create = create_order::<RpcClient>(
         buyer_address.clone(),
@@ -63,6 +66,7 @@ pub async fn main() -> eyre::Result<()> {
         &order_data,
         rent_capacity,
         None, // no xUDT — pure CKB order
+        fiber_address,
     );
     let balance = balance_and_sign_with_ckb_cli(&buyer_address, 1000, None);
 

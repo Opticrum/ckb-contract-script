@@ -301,6 +301,7 @@ pub fn to_order_info(
         xudt: None,
         ckb_capacity: RENT_CAPACITY,
         order_outpoint: to_proto_outpoint(packed),
+        fiber_address: None,
     }
 }
 
