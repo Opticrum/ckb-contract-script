@@ -2,26 +2,26 @@
 resolver = "2"
 
 members = [
-    "contracts/opticrum",
-    "calculator/opticrum",
-    "opticrum-protocol",
-    "tests",
+  "contracts/opticrum",
+  "calculator/opticrum",
+  "opticrum-protocol",
+  "tests",
 ]
 
 [workspace.dependencies]
-# ckb-cinnabar-calculator = { git = "https://github.com/ashuralyk/ckb-cinnabar.git", branch = "master" }
-# ckb-cinnabar-verifier = { git = "https://github.com/ashuralyk/ckb-cinnabar.git", branch = "master" }
-# ckb-cinnabar = { git = "https://github.com/ashuralyk/ckb-cinnabar.git", branch = "master" }
+ckb-cinnabar-calculator = { git = "https://github.com/ashuralyk/ckb-cinnabar.git", branch = "master" }
+ckb-cinnabar-verifier = { git = "https://github.com/ashuralyk/ckb-cinnabar.git", branch = "master" }
+ckb-cinnabar = { git = "https://github.com/ashuralyk/ckb-cinnabar.git", branch = "master" }
 
-ckb-cinnabar-calculator = { path = "../../ckb-cinnabar/cinnabar/calculate" }
-ckb-cinnabar-verifier = { path = "../../ckb-cinnabar/cinnabar/verify" }
-ckb-cinnabar = { path = "../../ckb-cinnabar/cinnabar" }
+# ckb-cinnabar = {path = "../../ckb-cinnabar/cinnabar"}
+# ckb-cinnabar-calculator = {path = "../../ckb-cinnabar/cinnabar/calculate"}
+# ckb-cinnabar-verifier = {path = "../../ckb-cinnabar/cinnabar/verify"}
 
 [package]
+default-run = "runner"
 edition = "2021"
 name = "runner"
 version = "0.1.0"
-default-run = "runner"
 
 [[bin]]
 name = "runner"
@@ -57,9 +57,9 @@ path = "src/bin/decline_rent.rs"
 
 [dependencies]
 ckb-cinnabar = { workspace = true }
-opticrum-calculator = { path = "calculator/opticrum" }
-hex = "0.4.3"
 dotenvy = "0.15"
+hex = "0.4.3"
+opticrum-calculator = { path = "calculator/opticrum" }
 
 [profile.release]
 codegen-units = 1
